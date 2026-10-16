@@ -208,7 +208,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.never)
         .scrollContentBackground(.hidden)
         .font(.system(size: 13))
         .modifier(NativeBudsActionStyle())
@@ -844,7 +844,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                                 }
                             }
                         }.font(.caption)
-                    }.scrollIndicators(.hidden).frame(height: 230)
+                    }.scrollIndicators(.never).frame(height: 230)
                     Text("Ganho em dB. A curva só é enviada ao clicar em Aplicar.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -981,7 +981,7 @@ private struct NativeBudsTileSurface: ViewModifier {
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
         popover.contentViewController = NativePanelController(model: model)
-        resize(height: 620)
+        resize(height: 560)
         // Prepare account/device models without requesting the headset connection.
         model.refresh()
     }
