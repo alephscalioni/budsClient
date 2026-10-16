@@ -208,7 +208,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .font(.system(size: 13))
         .modifier(NativeBudsActionStyle())
@@ -359,10 +359,22 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                     ForEach(availableNoiseOptions, id: \.0) { Text($0.1).tag($0.0) }
                 }.pickerStyle(.radioGroup).labelsHidden().disabled(!model.canControl)
             } else if key == "equalizer" {
-                Picker("Equalizador", selection: Binding(get: { eqPreset ?? -1 }, set: { model.send("device.equalizer", ["preset": $0]) })) {
-                    if eqPreset == nil { Text(eqValue).tag(-1).disabled(true) }
-                    ForEach(Array(eqOptions.enumerated()), id: \.offset) { Text($0.element).tag($0.offset) }
-                }.pickerStyle(.radioGroup).labelsHidden().disabled(!model.canControl)
+                VStack(spacing: 3) {
+                    ForEach(Array(eqOptions.enumerated()), id: \.offset) { option in
+                        Button { model.send("device.equalizer", ["preset": option.offset]) } label: {
+                            HStack(spacing: 12) {
+                                Text(option.element).fontWeight(eqPreset == option.offset ? .medium : .regular)
+                                Spacer()
+                                Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold))
+                                    .opacity(eqPreset == option.offset ? 1 : 0).accessibilityHidden(true)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .contentShape(RoundedRectangle(cornerRadius: 9))
+                            .background(eqPreset == option.offset ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 9))
+                        }.buttonStyle(.plain).disabled(!model.canControl)
+                            .accessibilityValue(eqPreset == option.offset ? "Selecionado" : "")
+                    }
+                }
                 if flag(model.device, "supports_custom_eq") {
                     Divider()
                     NativeCustomEqualizerEditor(model: model).id(text(model.switching, "selected_buds"))
@@ -389,16 +401,17 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 gestureToggle("Atender ou encerrar", detail: "Pinçar durante chamadas", key: "call_double_pinch")
                 gestureToggle("Recusar chamadas", detail: "Pinçar e segurar", key: "call_hold")
             }
-            if !model.canControl || (key == "touch" && !canTouch) {
+            if !flag(model.device, "busy") && (!model.canControl || (key == "touch" && !canTouch)) {
                 if !model.connected { Text("Conecte os Buds ao Mac para configurar.").font(.caption).foregroundStyle(.secondary) }
                 Button("Ler controles") { model.send("device.refresh") }.disabled(!model.canRefresh)
             }
-        }.padding(20).frame(width: key == "equalizer" ? 320 : key == "touch" ? 280 : 240).preferredColorScheme(.dark)
+        }.font(.system(size: 13)).controlSize(.regular).padding(20)
+            .frame(width: key == "equalizer" || key == "touch" ? 320 : 280).preferredColorScheme(.dark)
     }
     @ViewBuilder private func gestureToggle(_ title: String, detail: String, key: String) -> some View {
         let controls = model.displaySettings["touch_controls"] as? [String: Any] ?? [:]
         if let enabled = boolean(controls, key) {
-            HStack {
+            HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                     Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -407,7 +420,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 Toggle(title, isOn: Binding(get: { enabled }, set: { model.send("device.gesture", ["gesture": key, "enabled": $0]) }))
                     .labelsHidden().toggleStyle(.switch).disabled(!canTouch)
                     .accessibilityHint(detail)
-            }
+            }.padding(.vertical, 3)
         } else {
             HStack { Text(title); Spacer(); Text(model.unavailable).foregroundStyle(.secondary) }
                 .font(.callout)
@@ -560,8 +573,8 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 .lineLimit(2, reservesSpace: true).fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 13))
-            .contentShape(RoundedRectangle(cornerRadius: 13))
+            .modifier(NativeBudsTileSurface())
+            .contentShape(RoundedRectangle(cornerRadius: 14))
     }
     private var footer: some View {
         HStack(spacing: 10) {
@@ -580,10 +593,12 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             }.buttonStyle(.plain).focused($accountFocused).focusEffectDisabled()
                 .accessibilityLabel(flag(model.account, "connected") ? "Samsung Account, mostrar ou ocultar detalhes" : "Entrar com Samsung Account")
             Spacer(minLength: 4)
-            Button { model.send("device.refresh") } label: { Image(systemName: "arrow.clockwise").frame(width: 22, height: 24) }
-                .buttonStyle(.borderless).disabled(!model.canRefresh).help("Ler controles dos Buds").accessibilityLabel("Atualizar controles dos Buds")
-            Button { model.settingsOpen.toggle() } label: { Image(systemName: "slider.horizontal.3").frame(width: 22, height: 24) }
-                .buttonStyle(.borderless).help("Configurações dos Buds e alternância").accessibilityLabel("Mostrar ou ocultar configurações dos Buds e alternância")
+            Button { model.send("device.refresh") } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 26) }
+                .modifier(NativeBudsActionStyle()).buttonBorderShape(.circle)
+                .disabled(!model.canRefresh).help("Ler controles dos Buds").accessibilityLabel("Atualizar controles dos Buds")
+            Button { model.settingsOpen.toggle() } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 26) }
+                .modifier(NativeBudsActionStyle()).buttonBorderShape(.circle)
+                .help("Configurações dos Buds e alternância").accessibilityLabel("Mostrar ou ocultar configurações dos Buds e alternância")
         }
     }
     private var avatar: some View {
@@ -602,13 +617,13 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
         }.font(.system(size: 12)).accessibilityElement(children: .contain)
     }
     private var settings: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             Divider()
             Text("Ajustes").font(.system(size: 18, weight: .semibold))
             DisclosureGroup(isExpanded: $model.controlsExpanded) {
                 deviceSettings.padding(.top, 12)
             } label: {
-                Label("Som e controles", systemImage: "earbuds").fontWeight(.medium)
+                Label("Som e controles", systemImage: "earbuds").fontWeight(.medium).padding(.vertical, 4)
             }
             Divider()
             switching
@@ -616,7 +631,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             DisclosureGroup(isExpanded: $model.toolsExpanded) {
                 toolsSection.padding(.top, 12)
             } label: {
-                Label("Encontrar e testar", systemImage: "location.magnifyingglass").fontWeight(.medium)
+                Label("Encontrar e testar", systemImage: "location.magnifyingglass").fontWeight(.medium).padding(.vertical, 4)
             }
             Divider()
             DisclosureGroup(isExpanded: $model.updatesExpanded) {
@@ -624,7 +639,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 Divider().padding(.vertical, 8)
                 firmwareUpdates
             } label: {
-                Label("Atualizações", systemImage: "arrow.down.circle").fontWeight(.medium)
+                Label("Atualizações", systemImage: "arrow.down.circle").fontWeight(.medium).padding(.vertical, 4)
             }
             Divider()
             if flag(model.switching, "recovery_pending") {
@@ -632,6 +647,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Button("Sair do Buds") { model.send("app.quit") }
+                .buttonStyle(.borderless).foregroundStyle(.secondary).padding(.vertical, 3)
         }.font(.system(size: 12))
     }
     private var appUpdates: some View {
@@ -828,7 +844,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                                 }
                             }
                         }.font(.caption)
-                    }.frame(height: 230)
+                    }.scrollIndicators(.hidden).frame(height: 230)
                     Text("Ganho em dB. A curva só é enviada ao clicar em Aplicar.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -858,6 +874,16 @@ private struct NativeBudsActionStyle: ViewModifier {
         if #available(macOS 26.0, *) {
             content.buttonStyle(.glass)
         } else { content.buttonStyle(.bordered) }
+    }
+}
+
+private struct NativeBudsTileSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 14))
+        } else {
+            content.background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
+        }
     }
 }
 
@@ -955,7 +981,7 @@ private struct NativeBudsActionStyle: ViewModifier {
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
         popover.contentViewController = NativePanelController(model: model)
-        resize(height: 520)
+        resize(height: 620)
         // Prepare account/device models without requesting the headset connection.
         model.refresh()
     }

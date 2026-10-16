@@ -1,6 +1,6 @@
 {
   "version": "0.1.2",
-  "build": "5",
+  "build": "6",
   "feedURL": "https://github.com/alephscalioni/BudsClient/releases/latest/download/appcast.xml",
   "publicEDKey": "42pgwZWazSuWZuvG3oNTxz5mNhyavvl4dr7DaMGWUOs="
 }
