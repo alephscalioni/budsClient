@@ -7,8 +7,7 @@ struct ConnectionHUDContent: View {
     let battery: BudsBatterySnapshot?
     let resourceDirectory: URL?
     var systemImage: String = "laptopcomputer"
-    var portuguese: Bool = Locale.preferredLanguages.first?.hasPrefix("pt") == true
-    private func hudText(_ pt: String, _ en: String) -> String { portuguese ? pt : en }
+    var language: AppLanguage = .current
     private var prefix: String? {
         let profile = NativeBudsProfile.resolve(model: battery?.model, name: name)
         // Keep existing client artwork for earlier models as well. The cache
@@ -41,9 +40,9 @@ struct ConnectionHUDContent: View {
             }
             HStack(spacing: 16) {
                 if let battery, battery.left != nil || battery.right != nil || battery.casePercent != nil {
-                    if let left = battery.left { level(hudText("E", "L"), left) }
-                    if let right = battery.right { level(hudText("D", "R"), right) }
-                    if let casePercent = battery.casePercent { level(hudText("Estojo", "Case"), casePercent) }
+                    if let left = battery.left { level(LocalizedText.left.string(language), left) }
+                    if let right = battery.right { level(LocalizedText.right.string(language), right) }
+                    if let casePercent = battery.casePercent { level(LocalizedText.caseName.string(language), casePercent) }
                 }
             }.frame(minHeight: 15)
         }
@@ -54,15 +53,15 @@ struct ConnectionHUDContent: View {
     }
     private func level(_ side: String, _ rawValue: Int?) -> some View {
         let value = rawValue.flatMap { (0...100).contains($0) ? $0 : nil }
-        let label = side == hudText("E", "L") ? hudText("Esquerdo", "Left earbud")
-            : side == hudText("D", "R") ? hudText("Direito", "Right earbud") : hudText("Estojo", "Case")
+        let label = side == LocalizedText.left.string(language) ? LocalizedText.leftEarbud.string(language)
+            : side == LocalizedText.right.string(language) ? LocalizedText.rightEarbud.string(language) : LocalizedText.caseName.string(language)
         return HStack(spacing: 4) {
             Image(systemName: value.map { $0 <= 20 ? "battery.25percent" : $0 <= 50 ? "battery.50percent" : $0 <= 75 ? "battery.75percent" : "battery.100percent" } ?? "minus")
                 .foregroundStyle(value.map { $0 <= 20 } == true ? Color.orange : Color.primary)
             Text("\(side) \(value.map { "\($0)%" } ?? "—")").monospacedDigit()
         }.font(.system(size: 12, weight: .medium))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(label) \(value.map { "\($0)%" } ?? hudText("indisponível", "unavailable"))")
+            .accessibilityLabel("\(label) \(value.map { "\($0)%" } ?? LocalizedText.unavailable.string(language))")
     }
 }
 

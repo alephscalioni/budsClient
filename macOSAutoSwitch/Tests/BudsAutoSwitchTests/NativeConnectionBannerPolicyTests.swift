@@ -16,7 +16,7 @@ final class NativeConnectionBannerPolicyTests: XCTestCase {
                                (.acquiredFromOtherDevice, "arrow.down.left.circle"),
                                (.departedFromMac(destination: nil), "arrow.up.right.circle")] {
             var policy = NativeConnectionBannerPolicy()
-            let result = try XCTUnwrap(policy.presentation(for: event(kind), portuguese: true))
+            let result = try XCTUnwrap(policy.presentation(for: event(kind), language: .portuguese))
             XCTAssertEqual(result.systemImage, symbol)
             XCTAssertEqual(result.destination, kind == .departedFromMac(destination: nil)
                 ? "Desconectado do Mac · Conectado a outro dispositivo" : "Conectado ao Mac")
@@ -80,7 +80,7 @@ final class NativeConnectionBannerPolicyTests: XCTestCase {
         var policy = NativeConnectionBannerPolicy()
         let event = try XCTUnwrap(NativeConnectionBannerEvent.legacy(address: buds, name: "Buds",
             destination: "Conectado ao Galaxy", occurredAt: 1))
-        XCTAssertEqual(policy.presentation(for: event, portuguese: true)?.destination,
+        XCTAssertEqual(policy.presentation(for: event, language: .portuguese)?.destination,
                        "Desconectado do Mac · Conectado a outro dispositivo")
     }
 
@@ -90,7 +90,7 @@ final class NativeConnectionBannerPolicyTests: XCTestCase {
             budsAddress: buds, peerAddress: phone, name: " S25 Ultra ", transferID: id))
         var policy = NativeConnectionBannerPolicy()
         XCTAssertEqual(policy.presentation(for: event(.departedFromMac(destination: destination), id: id),
-            portuguese: true)?.destination, "Desconectado do Mac · Conectado a S25 Ultra")
+            language: .portuguese)?.destination, "Desconectado do Mac · Conectado a S25 Ultra")
 
         for wrong in [NativeConnectionBannerEvent.VerifiedDestination(budsAddress: otherBuds,
                           peerAddress: phone, name: "S25 Ultra", transferID: id),
@@ -98,14 +98,14 @@ final class NativeConnectionBannerPolicyTests: XCTestCase {
                           peerAddress: phone, name: "S25 Ultra", transferID: UUID())] {
             var policy = NativeConnectionBannerPolicy()
             XCTAssertEqual(policy.presentation(for: event(.departedFromMac(destination: wrong), id: id),
-                portuguese: true)?.destination, "Desconectado do Mac · Conectado a outro dispositivo")
+                language: .portuguese)?.destination, "Desconectado do Mac · Conectado a outro dispositivo")
         }
     }
 
     func testEnglishDepartureIncludesMacLossWithoutInventingDestination() {
         var policy = NativeConnectionBannerPolicy()
         XCTAssertEqual(policy.presentation(for: event(.departedFromMac(destination: nil)),
-            portuguese: false)?.destination, "Disconnected from Mac · Connected to another device")
+            language: .english)?.destination, "Disconnected from Mac · Connected to another device")
     }
 
     func testIdentityArrivingLateDoesNotRepeatAnAlreadyAnnouncedDeparture() throws {
@@ -146,5 +146,22 @@ final class NativeConnectionBannerPolicyTests: XCTestCase {
         }
         XCTAssertNil(NativeConnectionBannerEvent.VerifiedDestination(
             budsAddress: buds, peerAddress: phone, name: " \n ", transferID: UUID()))
+    }
+}
+
+final class AppLanguageTests: XCTestCase {
+    func testResolvesPreferredLanguages() {
+        XCTAssertEqual(AppLanguage.resolve(["pt-BR"]), .portuguese)
+        XCTAssertEqual(AppLanguage.resolve(["zh-Hant-TW"]), .chineseTraditional)
+        XCTAssertEqual(AppLanguage.resolve(["zh-CN"]), .chineseSimplified)
+        XCTAssertEqual(AppLanguage.resolve(["xx", "ja-JP"]), .japanese)
+        XCTAssertEqual(AppLanguage.resolve([]), .english)
+    }
+
+    func testSideLabelsAreDistinctAndComplete() {
+        for language in AppLanguage.allCases {
+            XCTAssertNotEqual(LocalizedText.left.string(language), LocalizedText.right.string(language), "\(language)")
+            XCTAssertNotNil(LocalizedText.disconnected(to: "x", language).range(of: "x"))
+        }
     }
 }
