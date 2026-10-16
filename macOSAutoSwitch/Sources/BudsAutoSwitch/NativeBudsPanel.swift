@@ -653,12 +653,14 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             Divider()
             Text("Ajustes").font(.system(size: 18, weight: .semibold))
             DisclosureGroup(isExpanded: $model.controlsExpanded) {
-                deviceSettings.padding(.top, 12)
+                VStack(alignment: .leading, spacing: 16) {
+                    switching
+                    Divider()
+                    deviceSettings
+                }.padding(.top, 12)
             } label: {
                 Label("Som e controles", systemImage: "earbuds").fontWeight(.medium).padding(.vertical, 4)
             }
-            Divider()
-            switching
             Divider()
             DisclosureGroup(isExpanded: $model.toolsExpanded) {
                 toolsSection.padding(.top, 12)
