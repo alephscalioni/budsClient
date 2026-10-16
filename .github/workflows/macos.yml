@@ -1,0 +1,46 @@
+name: BudsClient macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      BUDS_ACCOUNT_SIGNING_IDENTITY: '-'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Export and release validation tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Swift tests
+        run: swift test --disable-keychain --disable-netrc --package-path macOSAutoSwitch
+      - name: Assemble pinned source
+        run: python3 scripts/assemble-source.py
+      - name: NativeInterop before managed tests
+        run: bash scripts/build-native-interop.sh
+      - name: Managed lifecycle tests
+        run: dotnet test .build/workspace/GalaxyBudsClient/GalaxyBudsClient.Tests/GalaxyBudsClient.Tests.csproj -c Release -p:UseMacOSSDK=false -p:PackNative=true --filter 'FullyQualifiedName~NativeBuds'
+      - name: Native library
+        run: bash scripts/build-native-library.sh
+      - name: Package app with ad-hoc identity
+        run: BUDS_DOTNET="$(command -v dotnet)" bash scripts/build-buds-macos.sh
+      - name: Archive app
+        run: ditto -c -k --sequesterRsrc --keepParent dist/Buds.app dist/BudsClient-macos-arm64.zip
+      - uses: actions/upload-artifact@v6
+        with:
+          name: BudsClient-macos-arm64
+          path: dist/BudsClient-macos-arm64.zip
+          if-no-files-found: error

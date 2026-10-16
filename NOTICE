@@ -1,0 +1,16 @@
+BudsClient for macOS: native Swift application and managed host integration
+by Aleph Scalioni, distributed under GNU GPL version 3 (see LICENSE).
+
+The managed host, Bluetooth interop, protocol adaptations and device artwork
+derive from GalaxyBudsClient by Tim Schneeberger and its contributors:
+https://github.com/timschneeb/GalaxyBudsClient
+Build dependency: 754b6fdfb1c151b022cece775c8aaad4eb185afa.
+Modified original files are supplied as patches/managed-host.patch; added
+host files are in overlays/. Dependency copyrights and license notices are
+preserved in the generated source workspace. Obtain corresponding host source
+by running python3 scripts/assemble-source.py with this export.
+
+Sparkle 2.10.0 is fetched separately under its own license, copied into the
+packaged app as Sparkle-LICENSE.txt. Managed dependencies retain their own
+licenses and notices. Samsung and Galaxy Buds are Samsung trademarks;
+this is an independent project.

@@ -1,0 +1,255 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="GalaxyBudsClient.Interface.Controls.BudsIntegrationPanel"
+             Foreground="#F1F1EA" FontSize="13">
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="PanelGround">#0E0F0D</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelSurface">#1D1F1B</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelHover">#2D3029</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelText">#F1F1EA</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelSecondary">#B4B7AC</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelAccent">#D4CCB5</SolidColorBrush>
+        <SolidColorBrush x:Key="PanelWarning">#F0C798</SolidColorBrush>
+        <SolidColorBrush x:Key="SystemControlHighlightAccentBrush">#D4CCB5</SolidColorBrush>
+        <SolidColorBrush x:Key="SystemControlForegroundAccentBrush">#D4CCB5</SolidColorBrush>
+        <SolidColorBrush x:Key="ToggleSwitchFillOn">#D4CCB5</SolidColorBrush>
+        <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver">#E2DBC9</SolidColorBrush>
+        <SolidColorBrush x:Key="ToggleSwitchFillOnPressed">#BDB69F</SolidColorBrush>
+        <SolidColorBrush x:Key="ToggleSwitchKnobFillOn">#151710</SolidColorBrush>
+    </UserControl.Resources>
+    <UserControl.Styles>
+        <Style Selector="TextBlock.secondary">
+            <Setter Property="Foreground" Value="{StaticResource PanelSecondary}" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="TextBlock.section">
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinWidth" Value="28" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Background" Value="{StaticResource PanelSurface}" />
+            <Setter Property="Foreground" Value="{StaticResource PanelText}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource PanelHover}" />
+            <Setter Property="Foreground" Value="{StaticResource PanelText}" />
+        </Style>
+        <Style Selector="Button:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#3C4036" />
+        </Style>
+        <Style Selector="Button:disabled">
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+        <Style Selector="Button:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Foreground" Value="{StaticResource PanelSecondary}" />
+            <Setter Property="Background" Value="{StaticResource PanelSurface}" />
+        </Style>
+        <Style Selector="ToggleButton.noise">
+            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="MinWidth" Value="28" />
+            <Setter Property="Padding" Value="4,8" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="{StaticResource PanelSurface}" />
+            <Setter Property="Foreground" Value="{StaticResource PanelText}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ToggleButton.noise:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource PanelHover}" />
+        </Style>
+        <Style Selector="ToggleButton.noise:checked /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource PanelAccent}" />
+            <Setter Property="Foreground" Value="#151710" />
+        </Style>
+        <Style Selector="ToggleButton.noise:disabled">
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+        <Style Selector="ToggleButton.noise:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Foreground" Value="{StaticResource PanelSecondary}" />
+            <Setter Property="Background" Value="{StaticResource PanelSurface}" />
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Background" Value="{StaticResource PanelSurface}" />
+            <Setter Property="Foreground" Value="{StaticResource PanelText}" />
+            <Setter Property="BorderBrush" Value="#44483D" />
+        </Style>
+        <Style Selector="ComboBox:disabled /template/ ContentPresenter">
+            <Setter Property="Foreground" Value="{StaticResource PanelSecondary}" />
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
+        <Style Selector="ToggleSwitch">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinWidth" Value="40" />
+            <Setter Property="OnContent" Value="" />
+            <Setter Property="OffContent" Value="" />
+        </Style>
+        <Style Selector="Expander">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="MinHeight" Value="32" />
+        </Style>
+        <Style Selector=":is(Button):focus-visible">
+            <Setter Property="BorderBrush" Value="{StaticResource PanelAccent}" />
+            <Setter Property="BorderThickness" Value="2" />
+        </Style>
+        <Style Selector="ToggleSwitch:focus-visible">
+            <Setter Property="Background" Value="{StaticResource PanelHover}" />
+        </Style>
+    </UserControl.Styles>
+    <StackPanel Spacing="0" MaxWidth="470" HorizontalAlignment="Stretch">
+        <TextBlock Name="BridgeError" IsVisible="False" Focusable="True" TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{StaticResource PanelWarning}" AutomationProperties.Name="Falha na ação" />
+        <Grid ColumnDefinitions="32,*,36">
+            <Image Source="/Resources/buds-icon-macos.png" Width="26" Height="26"
+                   VerticalAlignment="Center" AutomationProperties.Name="Buds" />
+            <StackPanel Grid.Column="1" Spacing="3" Margin="8,0,8,0">
+                <TextBlock Name="DeviceName" Text="Galaxy Buds" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                <TextBlock Name="ConnectionSummary" Text="Aguardando estado dos Buds" Classes="secondary" TextWrapping="Wrap" />
+            </StackPanel>
+            <Button Name="DeviceRefresh" Grid.Column="2" Click="OnDeviceRefresh" Width="32" Height="32" Padding="8"
+                    IsEnabled="False" AutomationProperties.Name="Atualizar estado dos Buds" ToolTip.Tip="Atualizar estado dos Buds">
+                <Path Data="M 14,6 A 6,6 0 1 0 14,11 M 14,1 L 14,6 L 9,6" Stroke="{StaticResource PanelText}"
+                      StrokeThickness="1.5" Width="16" Height="16" Stretch="Uniform" />
+            </Button>
+        </Grid>
+
+        <Grid ColumnDefinitions="70,*,70" Height="176" Margin="0,8,0,0">
+            <StackPanel VerticalAlignment="Center" Spacing="4">
+                <TextBlock Text="Esquerdo" Classes="secondary" />
+                <TextBlock Name="LeftBattery" Text="—" FontSize="24" FontWeight="Medium" AutomationProperties.Name="Bateria do fone esquerdo desconhecida" />
+            </StackPanel>
+            <Grid Grid.Column="1" ColumnDefinitions="*,*" VerticalAlignment="Center" HorizontalAlignment="Center"
+                  ToolTip.Tip="Galaxy Buds3 Pro · imagem do produto">
+                <Image Source="/Resources/Device/Realistic/Buds3ProSilver-0.png" Width="124" Height="166" Margin="0,12,-6,0" Stretch="Uniform"
+                       AutomationProperties.Name="Galaxy Buds3 Pro prateado, vista esquerda" />
+                <Image Grid.Column="1" Source="/Resources/Device/Realistic/Buds3ProSilver-1.png" Width="124" Height="166" Margin="-6,0,0,12" Stretch="Uniform"
+                       AutomationProperties.Name="Galaxy Buds3 Pro prateado, vista direita" />
+            </Grid>
+            <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right" Spacing="4">
+                <TextBlock Text="Direito" Classes="secondary" HorizontalAlignment="Right" />
+                <TextBlock Name="RightBattery" Text="—" FontSize="24" FontWeight="Medium" HorizontalAlignment="Right"
+                           AutomationProperties.Name="Bateria do fone direito desconhecida" />
+            </StackPanel>
+        </Grid>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8" Margin="0,0,0,5">
+            <Path Data="M 2,5 Q 2,2 5,2 L 19,2 Q 22,2 22,5 L 22,12 Q 22,15 19,15 L 5,15 Q 2,15 2,12 Z M 2,7 L 22,7 M 10,11 L 14,11"
+                  Stroke="{StaticResource PanelSecondary}" StrokeThickness="1.4" Width="22" Height="16" Stretch="Uniform" />
+            <TextBlock Text="Estojo" Classes="secondary" VerticalAlignment="Center" />
+            <TextBlock Name="CaseBattery" Text="—" FontWeight="Medium" AutomationProperties.Name="Bateria do estojo desconhecida" />
+        </StackPanel>
+        <TextBlock Name="BatteryObservation" Text="Sem leitura de bateria" Classes="secondary" FontSize="11" HorizontalAlignment="Center" TextWrapping="Wrap" />
+
+        <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,8">
+            <TextBlock Text="Controle de ruído" Classes="section" />
+            <TextBlock Name="NoiseSummary" Grid.Column="1" Text="Sem leitura" Classes="secondary" />
+        </Grid>
+        <Grid Name="NoiseControls" ColumnDefinitions="*,*,*,*" ColumnSpacing="4" IsEnabled="False">
+            <ToggleButton Name="NoiseOff" Classes="noise" Content="Desligado" Tag="off" Click="OnNoise" AutomationProperties.Name="Desligar controle de ruído" />
+            <ToggleButton Name="NoiseAnc" Grid.Column="1" Classes="noise" Content="Cancelar ruído" Tag="anc" Click="OnNoise" AutomationProperties.Name="Ativar cancelamento de ruído" />
+            <ToggleButton Name="NoiseAmbient" Grid.Column="2" Classes="noise" Content="Ambiente" Tag="ambient" Click="OnNoise" AutomationProperties.Name="Ativar som ambiente" />
+            <ToggleButton Name="NoiseAdaptive" Grid.Column="3" Classes="noise" Content="Adaptável" Tag="adaptive" Click="OnNoise" AutomationProperties.Name="Ativar controle de ruído adaptável" />
+        </Grid>
+        <TextBlock Name="DeviceStatus" Text="Aguardando disponibilidade dos controles." Classes="secondary" TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Name="DeviceError" IsVisible="False" Foreground="{StaticResource PanelWarning}" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+        <Border BorderBrush="#30332C" BorderThickness="0,1,0,1" Margin="0,16,0,0" Padding="0,8">
+            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                <StackPanel Spacing="3" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <TextBlock Text="Alternância automática" Classes="section" />
+                    <TextBlock Name="SwitchSummary" Text="Consultando estado…" Classes="secondary" TextWrapping="Wrap" />
+                </StackPanel>
+                <ToggleSwitch Name="Enabled" Grid.Column="1" IsEnabled="False" VerticalAlignment="Center"
+                              IsCheckedChanged="OnEnabledChanged" AutomationProperties.Name="Alternar áudio automaticamente" />
+                <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Spacing="8">
+                    <TextBlock Name="SwitchError" TextWrapping="Wrap" IsVisible="False" Foreground="{StaticResource PanelWarning}" Margin="0,8,0,0" />
+                    <StackPanel Name="RecoveryPanel" Spacing="6" IsVisible="False" Margin="0,8,0,0">
+                        <TextBlock Text="Pause a mídia no Mac antes de restaurar o som." TextWrapping="Wrap" Foreground="{StaticResource PanelWarning}" />
+                        <Button Name="Restore" Content="Restaurar som do Mac" Click="OnRestore" HorizontalAlignment="Left" AutomationProperties.Name="Restaurar som do Mac" />
+                    </StackPanel>
+                    <Button Name="Stop" Content="Pausar alternância" Click="OnRestore" HorizontalAlignment="Left" IsVisible="False" AutomationProperties.Name="Pausar ou cancelar alternância" />
+                </StackPanel>
+                <Expander Name="SwitchExpander" Grid.Row="2" Grid.ColumnSpan="2" Header="Dispositivos e conexão" IsExpanded="False" Margin="0,4,0,0"
+                          AutomationProperties.Name="Dispositivos e conexão da alternância">
+                    <StackPanel Spacing="10" Margin="0,10,0,4">
+                        <TextBlock Text="Bluetooth nativo. Use a mesma Samsung Account no Galaxy e mantenha a alternância automática ativada no celular."
+                                   TextWrapping="Wrap" Classes="secondary" />
+                        <TextBlock Text="Fone para alternância" Classes="secondary" />
+                        <ComboBox Name="Buds" HorizontalAlignment="Stretch" SelectionChanged="OnSelectionChanged" IsEnabled="False"
+                                  PlaceholderText="Verifique os dispositivos" AutomationProperties.Name="Fone para alternância" />
+                        <TextBlock Name="PhoneLabel" IsVisible="False" Text="Galaxy para alternância" Classes="secondary" />
+                        <ComboBox Name="Phone" HorizontalAlignment="Stretch" SelectionChanged="OnSelectionChanged" IsEnabled="False"
+                                  PlaceholderText="Nenhum Galaxy disponível" AutomationProperties.Name="Galaxy para alternância" />
+                        <Button Name="Refresh" Content="Verificar dispositivos" Click="OnRefresh" HorizontalAlignment="Left" IsEnabled="False"
+                                AutomationProperties.Name="Verificar dispositivos para alternância" />
+                    </StackPanel>
+                </Expander>
+            </Grid>
+        </Border>
+
+        <Grid ColumnDefinitions="1.4*,*,*" ColumnSpacing="8" Margin="0,10,0,10">
+            <StackPanel Spacing="6">
+                <TextBlock Text="Equalizador" Classes="secondary" />
+                <ComboBox Name="Equalizer" HorizontalAlignment="Stretch" PlaceholderText="Sem leitura" IsEnabled="False"
+                          SelectionChanged="OnEqualizerChanged" AutomationProperties.Name="Predefinição do equalizador" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="6">
+                <TextBlock Text="Nível ambiente" Classes="secondary" />
+                <TextBlock Name="AmbientLevel" Text="—" MinHeight="32" VerticalAlignment="Center" Padding="0,6" AutomationProperties.Name="Nível de som ambiente desconhecido" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="6">
+                <TextBlock Text="Gestos" Classes="secondary" />
+                <ToggleSwitch Name="Touch" IsEnabled="False" IsCheckedChanged="OnTouchChanged" AutomationProperties.Name="Ativar gestos nos Buds" />
+                <TextBlock Name="TouchSummary" Text="Sem leitura" Classes="secondary" FontSize="11" />
+            </StackPanel>
+        </Grid>
+
+        <Expander Name="AccountExpander" IsExpanded="False" AutomationProperties.Name="Conta Samsung e sincronização">
+            <Expander.Header>
+                <Grid ColumnDefinitions="40,*" Margin="0,4">
+                    <Border Width="32" Height="32" CornerRadius="16" ClipToBounds="True" Background="#34382F" VerticalAlignment="Center">
+                        <Grid>
+                            <TextBlock Name="Initials" Text="SA" VerticalAlignment="Center" HorizontalAlignment="Center" FontWeight="SemiBold" FontSize="12" />
+                            <Image Name="Avatar" Stretch="UniformToFill" IsVisible="False" AutomationProperties.Name="Foto da Samsung Account" />
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                        <TextBlock Name="AccountName" Text="Samsung Account" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Name="AccountSummary" Text="Consultando sua conta…" Classes="secondary" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Grid>
+            </Expander.Header>
+            <StackPanel Margin="0,12,0,0" Spacing="10">
+                <TextBlock Text="Credenciais nas Chaves do macOS. O login abre o site oficial da Samsung." TextWrapping="Wrap" Classes="secondary" />
+                <TextBlock Name="AccountStatus" TextWrapping="Wrap" />
+                <TextBlock Text="A sincronização consulta os dispositivos registrados na conta. Esse registro não confirma a conexão dos Buds nem sua participação na alternância."
+                           TextWrapping="Wrap" Classes="secondary" />
+                <StackPanel Name="IdentityPanel" Spacing="8" IsVisible="False">
+                    <TextBlock Text="Confirme o e-mail ou telefone usado no login Samsung." TextWrapping="Wrap" />
+                    <TextBox Name="Identity" Watermark="E-mail ou telefone" MaxLength="512" AutomationProperties.Name="E-mail ou telefone da Samsung Account" />
+                    <Button Name="ConfirmIdentity" Content="Continuar autorização" Click="OnConfirmIdentity" HorizontalAlignment="Left" IsEnabled="False" AutomationProperties.Name="Continuar autorização da Samsung Account" />
+                </StackPanel>
+                <WrapPanel>
+                    <Button Name="SignIn" Content="Entrar na conta" Click="OnSignIn" Margin="0,0,8,8" IsEnabled="False" AutomationProperties.Name="Entrar na Samsung Account" />
+                    <Button Name="Sync" Content="Sincronizar registros" Click="OnSync" Margin="0,0,8,8" IsEnabled="False" AutomationProperties.Name="Sincronizar dispositivos registrados na conta" />
+                    <Button Name="CheckContinuity" Content="Conectar continuidade" Click="OnCheckContinuity" Margin="0,0,8,8" IsEnabled="False" AutomationProperties.Name="Conectar continuidade da conta Samsung" />
+                    <Button Name="Cancel" Content="Cancelar autorização" Click="OnCancel" IsVisible="False" Margin="0,0,0,8" AutomationProperties.Name="Cancelar autorização da Samsung Account" />
+                </WrapPanel>
+            </StackPanel>
+        </Expander>
+
+    </StackPanel>
+</UserControl>

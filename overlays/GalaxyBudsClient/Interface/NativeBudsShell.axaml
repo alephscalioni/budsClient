@@ -1,0 +1,11 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:GalaxyBudsClient.Interface.Controls"
+             x:Class="GalaxyBudsClient.Interface.NativeBudsShell"
+             Background="#0E0F0D"
+             Foreground="#F1F1EA" FontFamily=".AppleSystemUIFont, SF Pro Text, Helvetica Neue, sans-serif"
+             FontSize="13" AutomationProperties.Name="Painel de controle dos Buds">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <controls:BudsIntegrationPanel Name="Integration" Margin="24,12,24,12" />
+    </ScrollViewer>
+</UserControl>

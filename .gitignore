@@ -1,0 +1,10 @@
+.build/
+dist/
+.swiftpm/
+.DS_Store
+__pycache__/
+*.pyc
+bin/
+obj/
+xcuserdata/
+*.dSYM/

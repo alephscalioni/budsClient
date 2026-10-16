@@ -1,0 +1,821 @@
+diff --git a/GalaxyBudsClient/App.axaml.cs b/GalaxyBudsClient/App.axaml.cs
+index 9bdd3f648407b1294146f025ede6581f1c574cf5..332568c6ec305b57e4ea9516316d1f3e5fcc537c 100644
+--- a/GalaxyBudsClient/App.axaml.cs
++++ b/GalaxyBudsClient/App.axaml.cs
+@@ -54,7 +54,7 @@ public class App : Application
+     public NativeMenu TrayMenu => GetValue(TrayMenuProperty);
+     
+ #if !Android
+-    private readonly ExperimentManager _experimentManager = new();
++    private readonly ExperimentManager? _experimentManager = NativeBudsIntegration.NativeOnlyMode ? null : new();
+ #endif
+     
+     private BudsPopup? _popup;
+@@ -89,8 +89,11 @@ public class App : Application
+         
+         Log.Information("Translator mode file location: {File}", Loc.TranslatorModeFile);
+ #if !Android
+-        ScriptManager.Instance.RegisterUserHooks();
+-        Log.Debug("Environment: {Env}", _experimentManager.CurrentEnvironment());
++        if (!NativeBudsIntegration.NativeOnlyMode)
++        {
++            ScriptManager.Instance.RegisterUserHooks();
++            Log.Debug("Environment: {Env}", _experimentManager?.CurrentEnvironment());
++        }
+ #endif
+     }
+     
+@@ -104,6 +107,24 @@ public class App : Application
+         // accessibility-tree failure — it is benign and affects an assistive-technology query, not
+         // the UI itself — while letting every other exception crash and report as before.
+         Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandledException;
++        if (NativeBudsIntegration.NativeOnlyMode)
++        {
++            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime nativeDesktop)
++            {
++                nativeDesktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
++                foreach (var icon in TrayIcon.GetIcons(this) ?? []) icon.IsVisible = false;
++                GalaxyBudsClient.Platform.OSX.AppUtils.setHideInDock(true);
++                NativeBudsMenuBar.Start(nativeDesktop);
++            }
++            else if (ApplicationLifetime is ISingleViewApplicationLifetime nativeSingleView)
++                nativeSingleView.MainView = new NativeBudsShell();
++            base.OnFrameworkInitializationCompleted();
++#if DEBUG
++            if (System.Environment.GetEnvironmentVariable("BUDS_VERIFY_SINGLE_WINDOW") == "1")
++                Dispatcher.UIThread.Post(async () => await BudsInterfaceVerification.RunAsync());
++#endif
++            return;
++        }
+         /* Must subscribe before the initial connection attempt to catch its Connected event */
+         MultipointPatcher.Init();
+ 
+@@ -157,6 +178,11 @@ public class App : Application
+         SppMessageReceiver.Instance.NoiseControlUpdateResponse += OnNoiseControlUpdate;
+ 
+         DeviceMessageCache.Init();
++#if DEBUG
++        if (System.Environment.GetEnvironmentVariable("BUDS_VERIFY_SINGLE_WINDOW") == "1")
++            Dispatcher.UIThread.Post(async () => await BudsInterfaceVerification.RunAsync());
++#endif
++
+         
+         if (Loc.IsTranslatorModeEnabled)
+         {
+@@ -176,6 +202,7 @@ public class App : Application
+             case Event.ToggleManagerVisibility:
+                 if (!PlatformUtils.IsDesktop)
+                     break;
++                if (NativeBudsIntegration.NativeOnlyMode) { NativeBudsMenuBar.Show(toggle: true); break; }
+                 
+                 MainWindow.Instance.ToggleVisibility();
+                 break;
+@@ -365,6 +392,7 @@ public class App : Application
+         
+     private void TrayIcon_OnClicked(object? sender, EventArgs e)
+     {
++        if (NativeBudsIntegration.NativeOnlyMode) { NativeBudsMenuBar.Show(toggle: true); return; }
+         MainWindow.Instance.ToggleVisibility();
+     }
+     
+diff --git a/GalaxyBudsClient/Cli/CliHandler.cs b/GalaxyBudsClient/Cli/CliHandler.cs
+index c0bd85ce00c1ddde59e54882d05008f9f9d6fc7e..a7be744f6d791cbc224bad6ca28f45273ca2dc85 100644
+--- a/GalaxyBudsClient/Cli/CliHandler.cs
++++ b/GalaxyBudsClient/Cli/CliHandler.cs
+@@ -28,6 +28,38 @@ public static class CliHandler
+     
+     [Verb("app", HelpText = "Application options")]
+     public class AppOptions {
++        [Option("continuity-status", HelpText = "Read native audio switching status as JSON")]
++        public bool ContinuityStatus { get; set; }
++        [Option("start-continuity", HelpText = "Enable native audio switching")]
++        public bool StartContinuity { get; set; }
++        [Option("pause-continuity", HelpText = "Pause audio switching and restore sound")]
++        public bool PauseContinuity { get; set; }
++        [Option("account-continuity-status", HelpText = "Read account continuity readiness without account identifiers")]
++        public bool AccountContinuityStatus { get; set; }
++        [Option("connect-account-continuity", HelpText = "Enroll this app's outgoing account continuity identity")]
++        public bool ConnectAccountContinuity { get; set; }
++        [Option("check-account-continuity", HelpText = "Check saved Cloud certificate readiness; preserves the existing identity")]
++        public bool CheckAccountContinuity { get; set; }
++        [Option("continuity-phones", HelpText = "Read registered phone names and current selection")]
++        public bool ContinuityPhones { get; set; }
++        [Option("refresh-continuity-phones", HelpText = "Refresh this account's protected continuity roster")]
++        public bool RefreshContinuityPhones { get; set; }
++        [Option("connect-continuity-phone", HelpText = "Authenticate the uniquely named registered phone over Bluetooth")]
++        public string? ConnectContinuityPhone { get; set; }
++        [Option("buds-status", HelpText = "Read native Buds settings and battery as JSON")]
++        public bool BudsStatus { get; set; }
++        [Option("refresh-buds", HelpText = "Read settings from the connected Buds")]
++        public bool RefreshBuds { get; set; }
++        [Option("noise-mode", HelpText = "Set off, anc, ambient or adaptive; inspect --buds-status for confirmation")]
++        public string? NoiseMode { get; set; }
++        [Option("equalizer", HelpText = "Set equalizer preset 0 through 5")]
++        public int? Equalizer { get; set; }
++        [Option("touch-enabled", HelpText = "Enable or disable the existing touch controls (true/false)")]
++        public bool? TouchEnabled { get; set; }
++        [Option("buds-setting", HelpText = "Set conversation_detection, conversation_timeout, one_earbud_noise_control, sidetone or call_audio_to_buds; use --value")]
++        public string? BudsSetting { get; set; }
++        [Option("value", HelpText = "Buds setting value: true/false, or timeout 0/1/2 (5/10/15 seconds)")]
++        public string? BudsSettingValue { get; set; }
+         [Option( 'b', "show-battery-popup", Required = false, HelpText = "Show the battery popup")]
+         public bool ShowBatteryPopup { get; set; }    
+         [Option( 'a', "activate-window", Required = false, HelpText = "Bring the app window to the front")]
+@@ -136,7 +168,44 @@ public static class CliHandler
+         
+         var proxy = client.CreateProxy<IApplicationObject>(IpcService.ServiceName, ApplicationObject.Path);
+ 
+-        if (opts.ActivateWindow)
++        if (opts.ContinuityPhones)
++            Console.WriteLine(await proxy.GetContinuityPhonesAsync());
++        else if (opts.RefreshContinuityPhones)
++            await proxy.RefreshContinuityPhonesAsync();
++        else if (opts.ConnectContinuityPhone != null)
++            await proxy.ConnectContinuityPhoneAsync(opts.ConnectContinuityPhone);
++        else if (opts.AccountContinuityStatus)
++            Console.WriteLine(await proxy.GetAccountContinuityStatusAsync());
++        else if (opts.ConnectAccountContinuity)
++        {
++            await proxy.ConnectAccountContinuityAsync();
++            Console.WriteLine("Enrollment submitted. Use app --account-continuity-status to read its result.");
++        }
++        else if (opts.CheckAccountContinuity)
++        {
++            await proxy.CheckAccountContinuityAsync();
++            Console.WriteLine("Check submitted. Use app --account-continuity-status to read its result.");
++        }
++        else if (opts.BudsStatus)
++            Console.WriteLine(await proxy.GetBudsStatusAsync());
++        else if (opts.BudsSetting != null)
++        {
++            if (opts.BudsSettingValue == null) throw new ArgumentException("--buds-setting requires --value.");
++            await proxy.SetBudsSettingAsync(opts.BudsSetting, opts.BudsSettingValue);
++            Console.WriteLine("Request submitted. Use app --buds-status to read its result.");
++        }
++        else if (opts.RefreshBuds || opts.NoiseMode != null || opts.Equalizer != null || opts.TouchEnabled != null)
++        {
++            var setting = opts.RefreshBuds ? "refresh" : opts.NoiseMode != null ? "noise" : opts.Equalizer != null ? "equalizer" : "touch";
++            var value = opts.RefreshBuds ? "" : opts.NoiseMode ?? opts.Equalizer?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? opts.TouchEnabled?.ToString() ?? "";
++            await proxy.SetBudsSettingAsync(setting, value);
++            Console.WriteLine("Request submitted. Use app --buds-status to read its result.");
++        }
++        else if (opts.ContinuityStatus)
++            Console.WriteLine(await proxy.GetContinuityStatusAsync());
++        else if (opts.StartContinuity || opts.PauseContinuity)
++            await proxy.SetContinuityEnabledAsync(opts.StartContinuity);
++        else if (opts.ActivateWindow)
+             await proxy.ActivateAsync();
+         else if (opts.ShowBatteryPopup)
+             await proxy.ShowBatteryPopupAsync();
+@@ -194,4 +263,4 @@ public static class CliHandler
+ 
+         return true;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/Cli/Ipc/IpcService.cs b/GalaxyBudsClient/Cli/Ipc/IpcService.cs
+index 0fa31891bd0838c6972b83925a017d9c3d40e8c0..bc2d2730dd454775cad7e0ff6d54966d5faa00ea 100644
+--- a/GalaxyBudsClient/Cli/Ipc/IpcService.cs
++++ b/GalaxyBudsClient/Cli/Ipc/IpcService.cs
+@@ -34,7 +34,9 @@ public static class IpcService
+         }
+     }
+         
+-    public static async Task Setup()
++    public static Task Setup() => SetupCore(6);
++
++    private static async Task SetupCore(int attemptsRemaining)
+     {
+         if(Design.IsDesignMode)
+             return;
+@@ -56,11 +58,11 @@ public static class IpcService
+             }
+                 
+             await connection.RegisterObjectAsync(new ApplicationObject());
+-            _deviceObject = new DeviceObject();
+-            await connection.UpdateDeviceObjectAsync();
+-            
+-            BluetoothImpl.Instance.Connected += (sender, args) => _ = connection.UpdateDeviceObjectAsync();
+-            BluetoothImpl.Instance.Disconnected += (sender, args) => _ = connection.UpdateDeviceObjectAsync();
++            if (!NativeBudsIntegration.NativeOnlyMode)
++            {
++                _deviceObject = new DeviceObject();
++                await connection.UpdateDeviceObjectAsync();
++            }
+             
+             if(!useSessionBus)
+             {
+@@ -75,6 +77,14 @@ public static class IpcService
+             {
+                 Log.Information("IpcService: Service listening on the session bus");
+             }
++
++            // Bind succeeded: failed startup must not leave callbacks pointing
++            // at a disposed connection while the Bluetooth backend reconnects.
++            if (!NativeBudsIntegration.NativeOnlyMode)
++            {
++                BluetoothImpl.Instance.Connected += (sender, args) => _ = connection.UpdateDeviceObjectAsync();
++                BluetoothImpl.Instance.Disconnected += (sender, args) => _ = connection.UpdateDeviceObjectAsync();
++            }
+                 
+             while (true)
+             {
+@@ -83,6 +93,8 @@ public static class IpcService
+         }
+         catch (Exception e)
+         {
++            _deviceObject?.Dispose();
++            _deviceObject = null;
+             Log.Information("IpcService: Unable to register server: {Message}", e.Message);
+         }
+             
+@@ -94,6 +106,12 @@ public static class IpcService
+         }
+         catch (Exception e)
+         {
++            if (attemptsRemaining > 0)
++            {
++                await Task.Delay(400);
++                await SetupCore(attemptsRemaining - 1);
++                return;
++            }
+             Log.Warning("IpcService: Unable to connect to interface: {Message}", e.Message);
+             Log.Warning($"IpcService: Continuing without any instance restrictions. " +
+                         $"This can cause Bluetooth issues since only one app can interact with the earbuds at a time.");
+@@ -110,7 +128,14 @@ public static class IpcService
+         }
+         catch (Exception e)
+         {
++            client.Dispose();
++            if (attemptsRemaining > 0)
++            {
++                await Task.Delay(400);
++                await SetupCore(attemptsRemaining - 1);
++                return;
++            }
+             Log.Warning("IpcService: Unable to invoke activation method via proxy: {Message}", e.Message);
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/Cli/Ipc/Objects/ApplicationObject.cs b/GalaxyBudsClient/Cli/Ipc/Objects/ApplicationObject.cs
+index 96071f1a81e64b3b011546a7fdcdae38a8b90827..07117b0e9b897f9c7545007ec4d12606dc524a28 100644
+--- a/GalaxyBudsClient/Cli/Ipc/Objects/ApplicationObject.cs
++++ b/GalaxyBudsClient/Cli/Ipc/Objects/ApplicationObject.cs
+@@ -1,9 +1,12 @@
+ using System;
+ using System.Collections.Generic;
+ using System.Reflection;
++using System.Linq;
+ using System.Runtime.CompilerServices;
+ using System.Threading.Tasks;
+ using GalaxyBudsClient.Model;
++using GalaxyBudsClient.Platform;
++using Avalonia.Threading;
+ using Tmds.DBus;
+ using MainWindow = GalaxyBudsClient.Interface.MainWindow;
+ 
+@@ -19,6 +22,16 @@ public interface IApplicationObject : IDBusObject
+ {
+     Task ActivateAsync();
+     Task ShowBatteryPopupAsync();
++    Task<string> GetContinuityStatusAsync();
++    Task SetContinuityEnabledAsync(bool enabled);
++    Task<string> GetBudsStatusAsync();
++    Task<string> GetAccountContinuityStatusAsync();
++    Task CheckAccountContinuityAsync();
++    Task ConnectAccountContinuityAsync();
++    Task SetBudsSettingAsync(string setting, string value);
++    Task<string> GetContinuityPhonesAsync();
++    Task RefreshContinuityPhonesAsync();
++    Task ConnectContinuityPhoneAsync(string name);
+         
+     Task<IDictionary<string, string>> ListActionsAsync();
+     Task ExecuteActionAsync(string action);
+@@ -46,6 +59,78 @@ public sealed class ApplicationObject : BaseObjectWithProperties<ApplicationProp
+         Set(nameof(ApplicationProperties._AppVersion), Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "null");
+     }
+ 
++    public async Task<string> GetContinuityStatusAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(NativeBudsIntegration.PublicSwitchStatus);
++
++    public async Task SetContinuityEnabledAsync(bool enabled)
++    {
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.PerformAsync(new { action = enabled ? "switch.start" : "switch.stop" }));
++    }
++
++    public async Task<string> GetBudsStatusAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(NativeBudsIntegration.PublicDeviceStatus);
++
++    public async Task<string> GetAccountContinuityStatusAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(NativeBudsIntegration.PublicAccountContinuityStatus);
++
++    public async Task CheckAccountContinuityAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.PerformAsync(new { action = "account.prepare_certificate" }));
++
++    public async Task ConnectAccountContinuityAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.PerformAsync(new { action = "account.enroll_continuity" }));
++
++    public async Task<string> GetContinuityPhonesAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(NativeBudsIntegration.PublicContinuityPhones);
++
++    public async Task RefreshContinuityPhonesAsync() =>
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.PerformAsync(new { action = "account.peer_refresh" }));
++
++    public async Task ConnectContinuityPhoneAsync(string name)
++    {
++        if (string.IsNullOrWhiteSpace(name) || name.Length > 256 || name.Any(char.IsControl))
++            throw new ArgumentException("Invalid registered phone name.");
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.ConnectRegisteredPhoneAsync(name));
++    }
++
++    public async Task SetBudsSettingAsync(string setting, string value)
++    {
++        if (!NativeBudsIntegration.IsAvailable)
++            throw new InvalidOperationException("Native Buds settings are unavailable.");
++        object request = setting switch
++        {
++#if DEBUG
++            "laboratory_phone_intent_yield" when value == "" =>
++                new { action = "laboratory.phone_intent_yield" },
++#endif
++            "refresh" when value == "" => new { action = "device.refresh" },
++            "find" when value is "both" or "left" or "right" => new { action = "device.find", target = value },
++            "fit_test" when value == "" => new { action = "device.fit_test" },
++            "tools_cancel" when value == "" => new { action = "device.tools_cancel" },
++            "noise" when value is "off" or "anc" or "ambient" or "adaptive" =>
++                new { action = "device.noise", mode = value },
++            "equalizer" when int.TryParse(value, out var preset) && preset is >= 0 and <= 5 =>
++                new { action = "device.equalizer", preset },
++            "touch" when bool.TryParse(value, out var enabled) =>
++                new { action = "device.touch", enabled },
++            "media_controls" when bool.TryParse(value, out var mediaEnabled) =>
++                new { action = "device.media_controls", enabled = mediaEnabled },
++            "gesture_single_pinch" or "gesture_double_pinch" or "gesture_triple_pinch" or "gesture_swipe"
++                or "gesture_call_double_pinch" or "gesture_call_hold" when bool.TryParse(value, out var gestureEnabled) =>
++                new { action = "device.gesture", gesture = setting["gesture_".Length..], enabled = gestureEnabled },
++            "volume" when double.TryParse(value, System.Globalization.NumberStyles.Float,
++                    System.Globalization.CultureInfo.InvariantCulture, out var level)
++                && double.IsFinite(level) && level is >= 0 and <= 100 =>
++                new { action = "device.volume", level },
++            "conversation_detection" or "one_earbud_noise_control" or "sidetone" or "call_audio_to_buds"
++                when bool.TryParse(value, out var flag) =>
++                new { action = "device.setting", key = setting, value = flag },
++            "conversation_timeout" when int.TryParse(value, out var timeout) && timeout is >= 0 and <= 2 =>
++                new { action = "device.setting", key = setting, value = timeout },
++            _ => throw new ArgumentException("Invalid Buds setting or value.")
++        };
++        await Dispatcher.UIThread.InvokeAsync(() => NativeBudsIntegration.PerformAsync(request));
++    }
++
+     public Task ShowBatteryPopupAsync()
+     {
+         EventDispatcher.Instance.Dispatch(Event.ShowBatteryPopup);
+@@ -79,7 +164,12 @@ public sealed class ApplicationObject : BaseObjectWithProperties<ApplicationProp
+ 
+     public Task ActivateAsync()
+     {
++        if (NativeBudsIntegration.NativeOnlyMode)
++        {
++            Dispatcher.UIThread.Post(() => NativeBudsMenuBar.Show());
++            return Task.CompletedTask;
++        }
+         MainWindow.Instance.BringToFront();
+         return Task.CompletedTask;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/GalaxyBudsClient.csproj b/GalaxyBudsClient/GalaxyBudsClient.csproj
+index a4ee2209b4406ce96f54bbf2ee5b5ba4a340489d..8e1921a06ca58c4fef88f73f48fe38295bfaf4ac 100644
+--- a/GalaxyBudsClient/GalaxyBudsClient.csproj
++++ b/GalaxyBudsClient/GalaxyBudsClient.csproj
+@@ -128,7 +128,11 @@
+         <PackageReference Include="Serilog.Sinks.Trace" Version="4.0.0" />
+         <!-- Workaround: force include SkiaSharp 3.x libraries for Linux; this is already implicitly the case for other platforms -->
+         <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.1" />
+-        <PackageReference Include="Tmds.DBus" Version="0.21.2" />
++        <PackageReference Include="Tmds.DBus" Version="0.92.0" />
++        <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
++        <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
++        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="9.0.21" />
++        <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.21" />
+     </ItemGroup>
+ 
+ 
+@@ -145,6 +149,19 @@
+     <ItemGroup Condition="'$(IsOSX)'=='true'">
+         <ProjectReference Include="..\GalaxyBudsClient.Platform.OSX\GalaxyBudsClient.Platform.OSX.csproj" />
+     </ItemGroup>
++
++    <ItemGroup Condition="'$(IsOSX)'=='true' And Exists('../macOSAutoSwitch/dist/libBudsNative.dylib')">
++        <Content Include="../macOSAutoSwitch/dist/libBudsNative.dylib" Link="libBudsNative.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
++    </ItemGroup>
++
++    <!-- Build the optional Swift helper first with macOSAutoSwitch/scripts/build-app.sh. -->
++    <ItemGroup Condition="'$(IsOSX)'=='true' And Exists('../macOSAutoSwitch/dist/Galaxy Buds Auto Switch.app')">
++        <Content Include="../macOSAutoSwitch/dist/Galaxy Buds Auto Switch.app/**/*">
++            <Link>AutoSwitch/Galaxy Buds Auto Switch.app/%(RecursiveDir)%(Filename)%(Extension)</Link>
++            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
++            <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
++        </Content>
++    </ItemGroup>
+     
+     <ItemGroup>
+         <ProjectReference Include="..\GalaxyBudsClient.Platform\GalaxyBudsClient.Platform.csproj" />
+diff --git a/GalaxyBudsClient/Interface/MainWindow.axaml b/GalaxyBudsClient/Interface/MainWindow.axaml
+index 1d71ac244ff50b0f0ddfad4150093b1f6b06984d..404cdbc014e38a8d1794f98ef9e5a9af1fdd3207 100644
+--- a/GalaxyBudsClient/Interface/MainWindow.axaml
++++ b/GalaxyBudsClient/Interface/MainWindow.axaml
+@@ -3,13 +3,13 @@
+         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+         xmlns:interface="clr-namespace:GalaxyBudsClient.Interface"
+-        mc:Ignorable="d" d:DesignWidth="700" d:DesignHeight="640"
++        mc:Ignorable="d" d:DesignWidth="470" d:DesignHeight="680"
+         x:Class="GalaxyBudsClient.Interface.MainWindow"
+         MinWidth="470"
+         Height="640" Width="700"
+         WindowStartupLocation="CenterScreen"
+-        Icon="/Resources/icon.ico"
+-        Title="Galaxy Buds Manager">
++        Icon="/Resources/buds-icon-macos.png"
++        Title="Buds">
+ 
+-    <interface:MainView Name="MainView" />
+-</Window>
+\ No newline at end of file
++    <ContentControl Name="AppContent" />
++</Window>
+diff --git a/GalaxyBudsClient/Interface/MainWindow.axaml.cs b/GalaxyBudsClient/Interface/MainWindow.axaml.cs
+index be8b0ce61f196983199094b7157b74e4a86a5967..53a2207e6173bc733dfd6a366cba98b944272c87 100644
+--- a/GalaxyBudsClient/Interface/MainWindow.axaml.cs
++++ b/GalaxyBudsClient/Interface/MainWindow.axaml.cs
+@@ -21,6 +21,8 @@ public partial class MainWindow : StyledAppWindow
+ {
+    
+     private bool _firstShow = true;
++    private bool _closingAfterCleanup;
++    private bool _closingCleanupRunning;
+ 
+     private static App App => Application.Current as App ?? throw new InvalidOperationException();
+         
+@@ -39,9 +41,18 @@ public partial class MainWindow : StyledAppWindow
+     public MainWindow()
+     {
+         InitializeComponent();
++        if (NativeBudsIntegration.NativeOnlyMode)
++        {
++            Width = 470;
++            Height = 610;
++            MinHeight = 560;
++            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#0E0F0D"));
++            RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark;
++        }
++        AppContent.Content = NativeBudsIntegration.NativeOnlyMode ? new NativeBudsShell() : new MainView();
+         this.AttachDevTools();
+             
+-        BluetoothImpl.Instance.BluetoothError += OnBluetoothError;
++        if (!NativeBudsIntegration.NativeOnlyMode) BluetoothImpl.Instance.BluetoothError += OnBluetoothError;
+         Loc.LanguageUpdated += OnLanguageUpdated;
+             
+         if (PlatformUtils.IsDesktop && App.StartMinimized)
+@@ -59,9 +70,10 @@ public partial class MainWindow : StyledAppWindow
+ 
+     protected override async void OnClosing(WindowClosingEventArgs e)
+     {
++        if (_closingAfterCleanup) { base.OnClosing(e); return; }
+ #if OSX
+         // On macOS with LSUIElement, minimize to tray if setting is enabled
+-        if (Settings.Data.MinimizeToTray && e.CloseReason is not (WindowCloseReason.OSShutdown or WindowCloseReason.ApplicationShutdown))
++        if (!NativeBudsIntegration.NativeOnlyMode && Settings.Data.MinimizeToTray && e.CloseReason is not (WindowCloseReason.OSShutdown or WindowCloseReason.ApplicationShutdown))
+         {
+             BringToTray();
+             e.Cancel = true;
+@@ -96,14 +108,25 @@ public partial class MainWindow : StyledAppWindow
+         }
+ #endif
+             
+-        await BluetoothImpl.Instance.SendRequestAsync(MsgIds.FIND_MY_EARBUDS_STOP);
+-        await BluetoothImpl.Instance.DisconnectAsync();
+-        base.OnClosing(e);
++        e.Cancel = true;
++        if (_closingCleanupRunning) return;
++        _closingCleanupRunning = true;
++        try
++        {
++            await NativeBudsIntegration.ShutdownAsync();
++            if (!NativeBudsIntegration.NativeOnlyMode)
++            {
++                await BluetoothImpl.Instance.SendRequestAsync(MsgIds.FIND_MY_EARBUDS_STOP);
++                await BluetoothImpl.Instance.DisconnectAsync();
++            }
++        }
++        catch (Exception ex) { Log.Warning("Buds shutdown cleanup did not complete: {Type}", ex.GetType().Name); }
++        finally { _closingAfterCleanup = true; Close(); }
+     }
+         
+     protected override void OnOpened(EventArgs e)
+     {
+-        if (_firstShow)
++        if (_firstShow && !NativeBudsIntegration.NativeOnlyMode)
+         {
+             if (Settings.Data.OpenDevToolsOnStartup)
+             {
+@@ -123,7 +146,7 @@ public partial class MainWindow : StyledAppWindow
+ 
+     protected override void OnClosed(EventArgs e)
+     {
+-        BluetoothImpl.Instance.BluetoothError -= OnBluetoothError;
++        if (!NativeBudsIntegration.NativeOnlyMode) BluetoothImpl.Instance.BluetoothError -= OnBluetoothError;
+         Loc.LanguageUpdated -= OnLanguageUpdated;
+ 
+         if(App.ApplicationLifetime is IControlledApplicationLifetime lifetime)
+@@ -140,6 +163,7 @@ public partial class MainWindow : StyledAppWindow
+ 
+     public void BringToFront()
+     {
++        if (NativeBudsIntegration.NativeOnlyMode) { NativeBudsMenuBar.Show(); return; }
+         Dispatcher.UIThread.InvokeAsync(() =>
+         {  
+ #if OSX
+@@ -180,6 +204,7 @@ public partial class MainWindow : StyledAppWindow
+ 
+     public void ToggleVisibility()
+     {
++        if (NativeBudsIntegration.NativeOnlyMode) { NativeBudsMenuBar.Show(toggle: true); return; }
+         Dispatcher.UIThread.InvokeAsync(() =>
+         {
+             if (!IsVisible)
+diff --git a/GalaxyBudsClient/Interface/Pages/HomePage.axaml b/GalaxyBudsClient/Interface/Pages/HomePage.axaml
+index 25829f9d446aa2621f66ccfdd605560dadc8b2c0..14581003b7b7429c58bb00cfc3952dd7f85a3d86 100644
+--- a/GalaxyBudsClient/Interface/Pages/HomePage.axaml
++++ b/GalaxyBudsClient/Interface/Pages/HomePage.axaml
+@@ -24,6 +24,8 @@
+                 </ui:SettingsExpanderItem>
+             </controls:SettingsGroup>
+ 
++            <controls:BudsIntegrationPanel />
++
+             <controls:SettingsGroup>
+                 <controls:SettingsSymbolItem Name="NoiseControl"
+                                              Content="{ext:Translate {x:Static i18N:Keys.MainpageNoise}}"
+diff --git a/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml b/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml
+index a4925c6fa2c6076a63605fa53624f11e8a3c00f9..7ef83191dd89a88e13616126bb342a8c302d0170 100644
+--- a/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml
++++ b/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml
+@@ -22,13 +22,13 @@
+     <ScrollViewer>
+         <StackPanel Spacing="8" Margin="{StaticResource AppPageMargin}">
+             <DockPanel>
+-                <Image Source="{OnPlatform '/Resources/icon.ico', Android='/Resources/Android/Orange/android/res/mipmap-xxxhdpi/ic_launcher.png'}"
++                <Image Source="{OnPlatform '/Resources/icon.ico', macOS='/Resources/buds-icon-macos.png', Android='/Resources/Android/Orange/android/res/mipmap-xxxhdpi/ic_launcher.png'}"
+                        DockPanel.Dock="Left"
+                        Height="78"
+                        RenderOptions.BitmapInterpolationMode="HighQuality" />
+ 
+                 <StackPanel Spacing="{StaticResource SettingsSubtitleTextSpacing}" Margin="12 0">
+-                    <TextBlock Text="Galaxy Buds Manager"
++                    <TextBlock Text="Buds"
+                                Theme="{StaticResource BoldTitleTextBlockStyle}" />
+ 
+                     <TextBlock Text="{Binding CurrentVersion}"
+@@ -60,6 +60,8 @@
+                                              Click="OnManageDevicesClicked" />
+             </controls:SettingsGroup>
+ 
++            <controls:BudsIntegrationPanel />
++
+             <ui:SettingsExpander Header="{ext:Translate {x:Static i18N:Keys.SettingsAppearance}}" IsExpanded="True">
+                 <ui:SettingsExpander.IconSource>
+                     <ic:SymbolIconSource Symbol="PaintBrush" />
+@@ -303,4 +305,4 @@
+         </StackPanel>
+     </ScrollViewer>
+ 
+-</UserControl>
+\ No newline at end of file
++</UserControl>
+diff --git a/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml.cs b/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml.cs
+index 6305c74d26b55152d19a4b34abfca79445f4a0a7..ae7da7e699660e48d8caf5fc3a91dfd99692155d 100644
+--- a/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml.cs
++++ b/GalaxyBudsClient/Interface/Pages/SettingsPage.axaml.cs
+@@ -1,3 +1,4 @@
++using System;
+ using Avalonia.Interactivity;
+ using FluentAvalonia.UI.Controls;
+ using GalaxyBudsClient.Generated.I18N;
+@@ -6,6 +7,7 @@ using GalaxyBudsClient.Interface.Dialogs;
+ using GalaxyBudsClient.Interface.Services;
+ using GalaxyBudsClient.Interface.ViewModels.Pages;
+ using GalaxyBudsClient.Platform;
++using Serilog;
+ 
+ namespace GalaxyBudsClient.Interface.Pages;
+ 
+@@ -52,4 +54,4 @@ public partial class SettingsPage : BasePage<SettingsPageViewModel>
+             Description = success ? Strings.SettingsMultipointApplied : Strings.SettingsMultipointFailed
+         }.ShowAsync();
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/Interface/ViewModels/Pages/FirmwarePageViewModel.cs b/GalaxyBudsClient/Interface/ViewModels/Pages/FirmwarePageViewModel.cs
+index e933a8bcb521aa76d76cc851c33a3ad05fd7ac0f..cfd3029b7775a0a95fc73bd9f52962d895768be4 100644
+--- a/GalaxyBudsClient/Interface/ViewModels/Pages/FirmwarePageViewModel.cs
++++ b/GalaxyBudsClient/Interface/ViewModels/Pages/FirmwarePageViewModel.cs
+@@ -196,7 +196,12 @@ public partial class FirmwarePageViewModel : SubPageViewModelBase
+         var firmwareModel = binary.DetectedModel;
+         if (firmwareModel == null)
+         {
+-            Log.Warning("FirmwareSelectionPage.PrepareInstallation: Firmware model is null; skipping verification");
++            await new MessageBox
++            {
++                Title = Strings.FwSelectVerifyFail,
++                Description = "Não foi possível identificar o modelo deste firmware. A instalação foi cancelada."
++            }.ShowAsync();
++            return;
+         }
+         else if(connectedModel != firmwareModel)
+         {
+diff --git a/GalaxyBudsClient/Message/DeviceMessageCache.cs b/GalaxyBudsClient/Message/DeviceMessageCache.cs
+index 7496788150f77f7b90061168027d5ea8994edcc5..bde637d45d1458ae01fba9ca4b709e086bf1ddcf 100644
+--- a/GalaxyBudsClient/Message/DeviceMessageCache.cs
++++ b/GalaxyBudsClient/Message/DeviceMessageCache.cs
+@@ -1,4 +1,5 @@
+ using GalaxyBudsClient.Message.Decoder;
++using GalaxyBudsClient.Platform;
+ 
+ namespace GalaxyBudsClient.Message;
+ 
+@@ -33,6 +34,7 @@ public class DeviceMessageCache
+         SppMessageReceiver.Instance.GetAllDataResponse += (_, decoder) => DebugGetAllData = decoder;
+         SppMessageReceiver.Instance.BaseUpdate += (_, update) =>
+         {
++            NativeBudsStatusPublisher.Publish(update);
+             if (update.BatteryCase <= 100 || BasicStatusUpdateWithValidCase == null) // 101 = Disconnected
+             {
+                 BasicStatusUpdateWithValidCase = update;
+diff --git a/GalaxyBudsClient/Model/Firmware/FirmwareRemoteClient.cs b/GalaxyBudsClient/Model/Firmware/FirmwareRemoteClient.cs
+index acf3eb85b84536eb540fe64cad7532c1a0f428fc..312dd44309ec62768e3ba10f40d9ed069a43a540 100644
+--- a/GalaxyBudsClient/Model/Firmware/FirmwareRemoteClient.cs
++++ b/GalaxyBudsClient/Model/Firmware/FirmwareRemoteClient.cs
+@@ -19,11 +19,7 @@ public class FirmwareRemoteClient
+     private readonly HttpClient _client;
+     public FirmwareRemoteClient()
+     {
+-        var handler = new HttpClientHandler
+-        {
+-            ServerCertificateCustomValidationCallback = delegate { return true; }
+-        };
+-        _client = new HttpClient(handler);
++        _client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+     }
+         
+     public async Task<FirmwareRemoteBinary[]> SearchForFirmware(bool allowDowngrade = false)
+@@ -104,4 +100,4 @@ public class FirmwareRemoteClient
+             throw;
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/Platform/BluetoothImpl.cs b/GalaxyBudsClient/Platform/BluetoothImpl.cs
+index 384be71944f9037831a88f2f0ca974ae4c656707..b43491633eec8381abc80c257c47b1c30a7f48d3 100644
+--- a/GalaxyBudsClient/Platform/BluetoothImpl.cs
++++ b/GalaxyBudsClient/Platform/BluetoothImpl.cs
+@@ -96,7 +96,7 @@ public sealed partial class BluetoothImpl : ReactiveObject, IDisposable
+         try
+         {
+             // We don't want to initialize the backend in design mode. It would conflict with the actual application.
+-            if (!Design.IsDesignMode)
++            if (!Design.IsDesignMode && !NativeBudsIntegration.NativeOnlyMode)
+             {
+                 backend = PlatformImpl.Creator.CreateBluetoothService();
+             }
+@@ -134,6 +134,7 @@ public sealed partial class BluetoothImpl : ReactiveObject, IDisposable
+ 
+     public bool SetAltMode(bool altMode)
+     {
++        if (altMode && MultipointPatcher.NativeSwitchOwnsSmep) return false;
+         if (AlternativeModeEnabled == altMode)
+         {
+             return true;
+@@ -251,6 +252,7 @@ public sealed partial class BluetoothImpl : ReactiveObject, IDisposable
+ 
+     public async Task<bool> ConnectAsync(Device? device = null, bool alternative = false)
+     {
++        if (NativeBudsIntegration.NativeOnlyMode) return false;
+         if (alternative != AlternativeModeEnabled)
+         {
+             Log.Error("BluetoothImpl: Connection attempt in wrong mode {Alternative}", alternative);
+diff --git a/GalaxyBudsClient/Platform/MultipointPatcher.cs b/GalaxyBudsClient/Platform/MultipointPatcher.cs
+index 813159e8580ce8dd3f68e66426f003851b0f25a4..578e537fd433b644c0aa93a60f1bdc6a6918657b 100644
+--- a/GalaxyBudsClient/Platform/MultipointPatcher.cs
++++ b/GalaxyBudsClient/Platform/MultipointPatcher.cs
+@@ -54,6 +54,30 @@ public static class MultipointPatcher
+     private const byte MdeVersionOpcode = 0x0B;
+ 
+     private static readonly SemaphoreSlim Lock = new(1, 1);
++    private static int _nativeSmepOwner;
++    private static bool _nativeSmepLockHeld;
++    internal static bool NativeSwitchOwnsSmep => Volatile.Read(ref _nativeSmepOwner) != 0;
++
++    // Regular Buds settings use SppNew, a different service. Reserve SMEP for
++    // continuity so automatic patching and rename cannot open a second SMEP stream.
++    internal static async Task<bool> BeginNativeSwitchAsync()
++    {
++        if (Interlocked.CompareExchange(ref _nativeSmepOwner, 1, 0) != 0) return false;
++        if (!await Lock.WaitAsync(TimeSpan.FromSeconds(10)))
++        { Volatile.Write(ref _nativeSmepOwner, 0); return false; }
++        if (!NativeBudsIntegration.NativeOnlyMode && BluetoothImpl.Instance.AlternativeModeEnabled)
++        { Lock.Release(); Volatile.Write(ref _nativeSmepOwner, 0); return false; }
++        _nativeSmepLockHeld = true;
++        return true;
++    }
++
++    internal static void EndNativeSwitch()
++    {
++        if (!_nativeSmepLockHeld) return;
++        _nativeSmepLockHeld = false;
++        Volatile.Write(ref _nativeSmepOwner, 0);
++        Lock.Release();
++    }
+ 
+     /// <summary>Time to wait for the SMEP channel to report itself connected.</summary>
+     private const int ConnectTimeoutMs = 10000;
+@@ -103,7 +127,7 @@ public static class MultipointPatcher
+     {
+         try
+         {
+-            if (!Settings.Data.AutoEnableMultipoint)
++            if (!Settings.Data.AutoEnableMultipoint || NativeSwitchOwnsSmep)
+                 return;
+ 
+             /* Our own restore reconnects, and patching that would never terminate */
+@@ -137,6 +161,7 @@ public static class MultipointPatcher
+     /// <returns>true if the message was written, false if any step failed.</returns>
+     public static async Task<bool> ApplyAsync()
+     {
++        if (NativeSwitchOwnsSmep) return false;
+         if (!await Lock.WaitAsync(0))
+         {
+             Log.Warning("MultipointPatcher: A patch sequence is already running");
+diff --git a/GalaxyBudsClient/Program.cs b/GalaxyBudsClient/Program.cs
+index 7774b211b3320ddd1694b1eed2b0ac0d6b796e5c..97901d79dfa34bbabc299486358b0fc8f0127ceb 100644
+--- a/GalaxyBudsClient/Program.cs
++++ b/GalaxyBudsClient/Program.cs
+@@ -153,8 +153,13 @@ public static class Program
+                 // Native popup windows (ComboBox dropdowns, flyouts) don't open or render empty on macOS 27;
+                 // render them as overlays inside the owning window instead
+                 OverlayPopups = true
++#if DEBUG
++                , RenderingMode = System.Environment.GetEnvironmentVariable("BUDS_VERIFY_SINGLE_WINDOW") == "1"
++                    ? [AvaloniaNativeRenderingMode.Software]
++                    : [AvaloniaNativeRenderingMode.OpenGl, AvaloniaNativeRenderingMode.Software]
++#endif
+             })
+             .UsePlatformDetect()
+             .LogToTrace()
+             .WithInterFont();
+-}
+\ No newline at end of file
++}
+diff --git a/GalaxyBudsClient/i18n/br.axaml b/GalaxyBudsClient/i18n/br.axaml
+index f7975d359a3661df0e2b6d53b928ae1e847ad7b4..33bb0a46acedb1f9b4763c22e60f43116a806d40 100644
+--- a/GalaxyBudsClient/i18n/br.axaml
++++ b/GalaxyBudsClient/i18n/br.axaml
+@@ -425,6 +425,13 @@ Medir nível: Selecione um intervalo vertical para medir a diferença de nível
+     <sys:String x:Key="settings_color_override_description">Alterar a cor exibida dos seus fones no app</sys:String>
+     <sys:String x:Key="settings_nav_sidebar">Barra lateral de navegação</sys:String>
+     <sys:String x:Key="settings_nav_sidebar_description">Mostrar ou recolher os botões de navegação no lado esquerdo</sys:String>
++
++    <!-- Native macOS auto audio switching -->
++    <sys:String x:Key="settings_auto_switch_open">Abrir alternância automática de áudio (experimental)</sys:String>
++    <sys:String x:Key="settings_auto_switch_description">Abra os ajustes nativos do macOS para alternar o áudio entre este Mac e seu celular Galaxy. Requer o Galaxy conectado ao Mac por USB, com a depuração USB autorizada. Abrir os ajustes não ativa a alternância.</sys:String>
++    <sys:String x:Key="settings_auto_switch_missing">O aplicativo auxiliar nativo não está instalado. Na pasta do código-fonte do GalaxyBudsClient, execute: bash macOSAutoSwitch/scripts/build-app.sh. Depois, abra este ajuste novamente. Para incluir o auxiliar no aplicativo principal, recompile o aplicativo principal após compilar o auxiliar.</sys:String>
++    <sys:String x:Key="settings_auto_switch_launch_failed">Não foi possível abrir o aplicativo auxiliar nativo. Na pasta do código-fonte do GalaxyBudsClient, recompile com: bash macOSAutoSwitch/scripts/build-app.sh. Depois, tente novamente.</sys:String>
++
+     <sys:String x:Key="settings_tray_settings">Ícone da bandeja &amp; inicialização</sys:String>
+     <sys:String x:Key="settings_dyn_tray_mode">Ícone dinâmico na bandeja</sys:String>
+     <sys:String x:Key="settings_dyn_tray_mode_description">Exibir o status da bateria no ícone da bandeja</sys:String>
+diff --git a/GalaxyBudsClient/i18n/en.axaml b/GalaxyBudsClient/i18n/en.axaml
+index ce316dd8d1d57737a43598e593f0e5217c1c9d1a..bf44b943c9d4fbccea18ebf0255d1642e5c082b8 100644
+--- a/GalaxyBudsClient/i18n/en.axaml
++++ b/GalaxyBudsClient/i18n/en.axaml
+@@ -431,6 +431,13 @@ Measure level: Select a vertical span to measure the battery level difference be
+     <sys:String x:Key="settings_color_override_description">Change the displayed color of your earbuds in the app</sys:String>
+     <sys:String x:Key="settings_nav_sidebar">Navigation sidebar</sys:String>
+     <sys:String x:Key="settings_nav_sidebar_description">Show or collapse the navigation buttons on the left hand side</sys:String>
++
++    <!-- Native macOS auto audio switching -->
++    <sys:String x:Key="settings_auto_switch_open">Open Auto Audio Switching (experimental)</sys:String>
++    <sys:String x:Key="settings_auto_switch_description">Open native macOS settings for switching audio between this Mac and your Galaxy phone. Requires a Galaxy phone connected to the Mac by USB with USB debugging authorized. Opening settings does not enable switching.</sys:String>
++    <sys:String x:Key="settings_auto_switch_missing">The native helper is not installed. From the GalaxyBudsClient source checkout, run: bash macOSAutoSwitch/scripts/build-app.sh. Then reopen this setting. For a packaged app, rebuild the main app after building the helper to include it.</sys:String>
++    <sys:String x:Key="settings_auto_switch_launch_failed">Could not open the native helper. Rebuild it from the GalaxyBudsClient source checkout with: bash macOSAutoSwitch/scripts/build-app.sh. Then try again.</sys:String>
++
+     <sys:String x:Key="settings_tray_settings">Tray icon &amp; startup</sys:String>
+     <sys:String x:Key="settings_dyn_tray_mode">Dynamic tray icon</sys:String>
+     <sys:String x:Key="settings_dyn_tray_mode_description">Display the battery status in the tray icon</sys:String>
