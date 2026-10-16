@@ -105,7 +105,8 @@ internal static class NativeBudsIntegration
         try
         {
             var document = JsonDocument.Parse(Marshal.PtrToStringUTF8(pointer) ?? "{}");
-            if (document.RootElement.TryGetProperty("switching", out var state)) PublishDiagnostic(state);
+            if (document.RootElement.TryGetProperty("switching", out var state))
+                PublishDiagnostic(state, document.RootElement.TryGetProperty("app_update", out var update) ? update : default);
             return document;
         }
         finally { if (pointer != IntPtr.Zero) FreeStateNative(pointer); }
@@ -185,7 +186,7 @@ internal static class NativeBudsIntegration
         return JsonSerializer.Serialize(safe);
     }
     private static DateTime _nextDiagnostic;
-    private static void PublishDiagnostic(JsonElement state)
+    private static void PublishDiagnostic(JsonElement state, JsonElement update)
     {
         if (!OperatingSystem.IsMacOS() || DateTime.UtcNow < _nextDiagnostic) return;
         _nextDiagnostic = DateTime.UtcNow.AddSeconds(1);
@@ -198,6 +199,17 @@ internal static class NativeBudsIntegration
             File.WriteAllText(temporary, Sanitize(state));
             File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             File.Move(temporary, path, true);
+            if (update.ValueKind == JsonValueKind.Object)
+            {
+                var safeUpdate = new System.Collections.Generic.Dictionary<string, JsonElement>();
+                foreach (var key in new[] { "configured", "framework_available", "current_version", "current_build", "status", "waiting_reason" })
+                    if (update.TryGetProperty(key, out var value)) safeUpdate[key] = value;
+                path = Path.Combine(directory, "app-update-state.json");
+                temporary = path + ".tmp";
+                File.WriteAllText(temporary, JsonSerializer.Serialize(safeUpdate));
+                File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.Move(temporary, path, true);
+            }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
@@ -282,14 +294,25 @@ internal static class NativeBudsIntegration
         _shuttingDown = true;
         _maintenance?.Stop();
         Interlocked.Increment(ref _startGeneration);
-        ShutdownNative();
-        // Give the native stop task time to restore mute and close its channel.
-        for (var attempt = 0; attempt < 200; attempt++)
+        try
         {
-            await Task.Delay(100);
-            if (SwitchIsActiveNative() == 0) { ReleaseSmep(); return; }
+            ShutdownNative();
+            // Give the native stop task time to restore mute and close its channel.
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                await Task.Delay(100);
+                if (SwitchIsActiveNative() == 0) { ReleaseSmep(); return; }
+            }
+            // A deadline is not a successful drain. Keep the process and guard
+            // alive so the host can report the blocker and retry termination.
+            throw new TimeoutException("O Bluetooth ainda não confirmou o encerramento seguro.");
         }
-        // The existing guard worker also restores the saved mute state on process exit.
+        catch
+        {
+            _shuttingDown = false;
+            _maintenance?.Start();
+            throw;
+        }
     }
     public static void OpenAccount() { if (!IsAvailable) throw new InvalidOperationException("A integração Samsung Account não está incluída nesta versão do Buds."); OpenAccountNative(); }
     public static void OpenSwitch(string? address, string? name) { OpenSwitchNative(address ?? "", name ?? "Galaxy Buds"); }

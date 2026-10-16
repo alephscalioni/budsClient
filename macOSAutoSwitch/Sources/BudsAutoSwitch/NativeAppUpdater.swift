@@ -31,23 +31,28 @@ enum NativeAppUpdateSafetyPolicy {
 
     @MainActor static func prepare(
         isSafeToInstall: @escaping @MainActor () -> Bool,
+        canPrepareShutdown: (@MainActor () -> Bool)? = nil,
         requestGracefulShutdown: @escaping @MainActor () async -> Void,
-        onStep: @escaping @MainActor (Step) -> Void = { _ in }
+        onStep: @escaping @MainActor (Step) -> Void = { _ in },
+        sleep: @escaping @MainActor () async throws -> Void = { try await Task.sleep(nanoseconds: 1_000_000_000) }
     ) async -> Bool {
         var shutdownPrepared = false
         var previous: Step?
         while !Task.isCancelled {
-            let step = nextStep(isSafe: isSafeToInstall(), shutdownPrepared: shutdownPrepared, cancelled: Task.isCancelled)
-            if previous != step { previous = step; onStep(step) }
+            // A cancellable settings read need not finish before the host is
+            // allowed to cancel it. Installation still requires the full drain.
+            let ready = shutdownPrepared ? isSafeToInstall() : (canPrepareShutdown ?? isSafeToInstall)()
+            let step = nextStep(isSafe: ready, shutdownPrepared: shutdownPrepared, cancelled: Task.isCancelled)
+            if previous != step || step == .wait { previous = step; onStep(step) }
             // The progress callback can reenter the host and cancel this task.
             guard !Task.isCancelled else { return false }
             switch step {
             case .cancelled: return false
             case .wait:
-                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                do { try await sleep() }
                 catch { return false }
             case .prepareShutdown:
-                guard isSafeToInstall() else { continue }
+                guard (canPrepareShutdown ?? isSafeToInstall)() else { continue }
                 await requestGracefulShutdown()
                 shutdownPrepared = true
             case .install:
@@ -92,10 +97,13 @@ struct NativeAppUpdateInstallationIntent {
     private let configuration: NativeAppUpdateConfiguration?
     private let configurationError: String?
     private let isSafeToInstall: @MainActor () -> Bool
+    private let canPrepareShutdown: @MainActor () -> Bool
+    private let installationBlocker: @MainActor () -> String?
     private let requestGracefulShutdown: @MainActor () async -> Void
     private var status = "not_started"
     private var statusDetail = "The updater has not started."
     private var lastError = ""
+    private var waitingReason = ""
     private var started = false
     private var installationTask: Task<Void, Never>?
     private var installationID: UUID?
@@ -110,6 +118,8 @@ struct NativeAppUpdateInstallationIntent {
 
     init(
         isSafeToInstall: @escaping @MainActor () -> Bool,
+        canPrepareShutdown: (@MainActor () -> Bool)? = nil,
+        installationBlocker: @escaping @MainActor () -> String? = { nil },
         requestGracefulShutdown: @escaping @MainActor () async -> Void
     ) {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -123,6 +133,8 @@ struct NativeAppUpdateInstallationIntent {
             configurationError = error.localizedDescription
         }
         self.isSafeToInstall = isSafeToInstall
+        self.canPrepareShutdown = canPrepareShutdown ?? isSafeToInstall
+        self.installationBlocker = installationBlocker
         self.requestGracefulShutdown = requestGracefulShutdown
         super.init()
     }
@@ -169,7 +181,7 @@ struct NativeAppUpdateInstallationIntent {
             "automatically_checks": checks, "automatically_downloads": downloads,
             "current_version": (info["CFBundleShortVersionString"] as? String).map { $0 as Any } ?? NSNull(),
             "current_build": (info["CFBundleVersion"] as? String).map { $0 as Any } ?? NSNull(),
-            "status": effectiveStatus, "status_detail": detail, "error": error
+            "status": effectiveStatus, "status_detail": detail, "waiting_reason": waitingReason, "error": error
         ]
     }
 
@@ -231,8 +243,16 @@ struct NativeAppUpdateInstallationIntent {
     /// caller receives false and must not approve termination. This never terminates the app.
     func prepareForTermination() async -> Bool {
         await NativeAppUpdateSafetyPolicy.prepare(
-            isSafeToInstall: isSafeToInstall, requestGracefulShutdown: requestGracefulShutdown
+            isSafeToInstall: isSafeToInstall, canPrepareShutdown: canPrepareShutdown,
+            requestGracefulShutdown: requestGracefulShutdown
         )
+    }
+
+    /// Preserve Sparkle's install-on-quit scheduler. Downloading in the
+    /// background must not request an immediate restart of the running app.
+    func scheduleInstallationOnQuit() -> Bool {
+        installationIntent.schedule()
+        return false
     }
 
     private func storedBoolean(_ key: String) -> Bool {
@@ -244,6 +264,8 @@ struct NativeAppUpdateInstallationIntent {
 
     private func setStatus(_ status: String, detail: String, error: String = "") {
         self.status = status; statusDetail = detail; lastError = error
+        waitingReason = ["waiting_for_safe_install", "preparing_shutdown"].contains(status)
+            ? installationBlocker() ?? "" : ""
         onChange?()
     }
 
@@ -280,12 +302,13 @@ struct NativeAppUpdateInstallationIntent {
         let id = UUID()
         installationID = id
         let safe = isSafeToInstall
+        let prepare = canPrepareShutdown
         let shutdown = requestGracefulShutdown
         // No strong reference to this owner survives a sleep or the host's async drain.
         installationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let ready = await NativeAppUpdateSafetyPolicy.prepare(
-                    isSafeToInstall: safe, requestGracefulShutdown: shutdown,
+                    isSafeToInstall: safe, canPrepareShutdown: prepare, requestGracefulShutdown: shutdown,
                     onStep: { [weak self] step in
                         guard let self, self.installationID == id else { return }
                         if step == .wait {
@@ -379,11 +402,7 @@ extension NativeAppUpdater: SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
-        installationIntent.schedule()
-        // Take responsibility for the supplied handler and use exactly the relaunch gate.
-        // Sparkle still installs on ordinary termination: see prepareForTermination().
-        postponeInstallation(immediateInstallHandler)
-        return true
+        scheduleInstallationOnQuit()
     }
 
     func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,

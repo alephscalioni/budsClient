@@ -305,28 +305,67 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
         }
     }
     private var features: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 16) {
         noiseControl
         HStack(spacing: 8) {
             featureButton("equalizer", title: "Equalizador", value: eqValue, symbol: "slider.horizontal.3")
-            featureButton("levels", title: "Intensidade", value: levelSummary, symbol: "slider.horizontal.3")
             featureButton("touch", title: "Gestos", value: flag(model.displaySettings, "media_controls_mixed") ? "Personalizados" : boolean(model.displaySettings, "media_controls_enabled").map { $0 ? "Ativados" : "Desativados" } ?? model.unavailable, symbol: "hand.tap")
         }
         .disabled(!model.canControl).opacity(model.canControl ? 1 : 0.55)
         }
     }
     private var noiseControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Controle de ruído").font(.system(size: 11, weight: .medium))
-            Picker("Controle de ruído", selection: Binding(
-                get: { model.requestedNoise ?? text(model.displaySettings, "noise_mode") },
-                set: { if $0 != text(model.displaySettings, "noise_mode") { model.send("device.noise", ["mode": $0]) } })) {
-                ForEach(availableNoiseOptions, id: \.0) { option in
-                    Text(option.0 == "anc" ? "ANC" : option.0 == "ambient" ? "Ambiente" : option.1).tag(option.0)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 4) {
+                ForEach(["off", "ambient", "adaptive", "anc"].filter { mode in
+                    availableNoiseOptions.contains { $0.0 == mode }
+                }, id: \.self) { mode in
+                    noiseModeButton(mode)
                 }
-            }.pickerStyle(.segmented).labelsHidden()
-                .disabled(!model.canControl || model.requestedNoise != nil)
-        }.padding(.bottom, 8)
+            }
+            .accessibilityElement(children: .contain).accessibilityLabel("Controle de ruído")
+            if let level = activeNoiseLevel {
+                NativeNoiseLevelRow(model: model, kind: level.kind, value: level.value, maximum: level.maximum)
+                    .id(level.kind)
+                    .disabled(model.requestedNoise != nil)
+            }
+        }
+    }
+    private func noiseModeButton(_ mode: String) -> some View {
+        let selected = (model.requestedNoise ?? text(model.displaySettings, "noise_mode")) == mode
+        let title = noiseOptions.first { $0.0 == mode }?.1 ?? mode
+        let symbol = mode == "off" ? "waveform.slash" : mode == "ambient" ? "ear.badge.waveform" : mode == "adaptive" ? "waveform.path" : "waveform"
+        return Button {
+            if !selected { model.send("device.noise", ["mode": mode]) }
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .medium))
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(selected ? Color.black : Color.primary)
+                    .modifier(NativeNoiseModeSurface(selected: selected))
+                Text(title).font(.system(size: 11, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .multilineTextAlignment(.center).lineLimit(2)
+                    .frame(height: 28, alignment: .top)
+            }.frame(maxWidth: .infinity).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.canControl || model.requestedNoise != nil)
+        .opacity(model.canControl || model.requestedNoise != nil ? 1 : 0.45)
+        .accessibilityLabel(mode == "anc" ? "Cancelamento de ruído" : title)
+        .accessibilityValue(selected ? "Selecionado" : "")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(mode == "anc" ? "Cancelamento ativo de ruído" : title)
+    }
+    private var activeNoiseLevel: (kind: String, value: Int, maximum: Int)? {
+        let kind = model.requestedNoise ?? text(model.displaySettings, "noise_mode")
+        guard ["ambient", "anc"].contains(kind),
+              let levels = model.displaySettings["levels"] as? [String: Any],
+              let info = levels[kind] as? [String: Any],
+              let value = number(info, "value"), let maximum = number(info, "maximum"),
+              maximum >= 1, maximum <= 4, value >= 0, value <= maximum else { return nil }
+        return (kind, Int(value), Int(maximum))
     }
     private func featureButton(_ key: String, title: String, value: String, symbol: String) -> some View {
         Button {
@@ -338,13 +377,6 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             .popover(isPresented: Binding(get: { model.feature == key }, set: { if !$0 { model.feature = nil } }), arrowEdge: .top) {
                 featureOptions(key, title: title)
             }
-    }
-    private var levelSummary: String {
-        let kind = text(model.displaySettings, "noise_mode") == "ambient" ? "ambient" : "anc"
-        guard let levels = model.displaySettings["levels"] as? [String: Any],
-              let level = levels[kind] as? [String: Any], let value = number(level, "value") else { return model.unavailable }
-        if number(level, "maximum") == 1 { return value == 0 ? "Baixa" : "Alta" }
-        return "Nível \(Int(value) + 1)"
     }
     private var availableNoiseOptions: [(String, String)] {
         guard let modes = model.device["noise_modes"] as? [String] else { return noiseOptions }
@@ -683,7 +715,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
         case "update_available": return "Uma nova versão está disponível."
         case "downloading": return "Baixando atualização…"
         case "downloaded": return "Atualização baixada. A instalação aguarda o app poder reiniciar."
-        case "waiting_for_safe_install": return "A instalação aguarda o fim da reprodução ou da chamada."
+        case "waiting_for_safe_install": return text(update, "waiting_reason", "A instalação aguarda o fim da reprodução ou da chamada.")
         case "preparing_shutdown", "preparing_installation": return "Preparando o app para atualizar…"
         case "installing": return "Instalando atualização…"
         case "no_update": return "Você está usando a versão mais recente compatível."
@@ -786,7 +818,8 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
     private var activeMode: Bool { text(model.displaySettings, "noise_mode") == (kind == "ambient" ? "ambient" : "anc") }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(kind == "ambient" ? "Som ambiente" : "Cancelamento de ruído").fontWeight(.medium)
+            Text(kind == "ambient" ? "Volume do som ambiente" : "Intensidade do cancelamento")
+                .font(.system(size: 12, weight: .medium))
             if maximum == 1 {
                 Picker("Intensidade", selection: Binding(get: { value }, set: {
                     model.send("device.level", ["kind": kind, "value": $0])
@@ -806,10 +839,11 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                                 if Int(draft) != value { model.send("device.level", ["kind": kind, "value": Int(draft)]) }
                             }
                         }).accessibilityLabel(kind == "ambient" ? "Intensidade do som ambiente" : "Intensidade do cancelamento de ruído")
-                    Text("\(Int(editing ? draft : Double(value)) + 1)/\(maximum + 1)").monospacedDigit()
+                    Text("\(Int(editing ? draft : Double(value)) + 1)/\(maximum + 1)")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            if !activeMode { Text(kind == "ambient" ? "Ative Som ambiente para ajustar." : "Ative ANC para ajustar.").font(.caption).foregroundStyle(.secondary) }
+            if !activeMode && model.requestedNoise == nil { Text(kind == "ambient" ? "Ative Som ambiente para ajustar." : "Ative ANC para ajustar.").font(.caption).foregroundStyle(.secondary) }
         }.disabled(!model.canControl || !activeMode)
     }
 }
@@ -883,6 +917,19 @@ private struct NativeBudsTileSurface: ViewModifier {
             content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 14))
         } else {
             content.background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+}
+
+private struct NativeNoiseModeSurface: ViewModifier {
+    let selected: Bool
+    func body(content: Content) -> some View {
+        if selected {
+            content.background(.white.opacity(0.9), in: Circle())
+        } else if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content.background(.quaternary.opacity(0.6), in: Circle())
         }
     }
 }
@@ -981,7 +1028,7 @@ private struct NativeBudsTileSurface: ViewModifier {
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
         popover.contentViewController = NativePanelController(model: model)
-        resize(height: 560)
+        resize(height: 620)
         // Prepare account/device models without requesting the headset connection.
         model.refresh()
     }

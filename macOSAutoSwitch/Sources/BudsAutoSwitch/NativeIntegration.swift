@@ -96,7 +96,9 @@ import SwiftUI
             Task { await model.refresh(); synchronizeSettings() }
         }
         if appUpdater == nil {
-            let updater = NativeAppUpdater(isSafeToInstall: { safeForAppUpdate() }, requestGracefulShutdown: {
+            let updater = NativeAppUpdater(isSafeToInstall: { safeForAppUpdate() },
+                canPrepareShutdown: { appUpdateBlocker(requireDrain: false) == nil },
+                installationBlocker: { appUpdateBlocker() }, requestGracefulShutdown: {
                 await prepareAppUpdateShutdown()
             })
             appUpdater = updater
@@ -127,11 +129,18 @@ import SwiftUI
     }
 
     private static func safeForAppUpdate() -> Bool {
-        guard let activity = try? MacAudio.activity(), !activity.input, !activity.output else { return false }
-        return !preparing && switchModel?.busy != true && switchModel?.transportIsSettling != true
-            && switchModel?.recoveryPending != true && switchModel?.remoteCallActive != true
-            && settingsModel?.toolInProgress != true
-            && settingsOperationsDrained()
+        appUpdateBlocker() == nil
+    }
+
+    private static func appUpdateBlocker(requireDrain: Bool = true) -> String? {
+        guard let activity = try? MacAudio.activity() else { return "Não foi possível confirmar a atividade de áudio. Feche o app de mídia ou chamada e tente novamente." }
+        if activity.input || switchModel?.remoteCallActive == true { return "A instalação aguarda o fim da chamada ou do uso do microfone." }
+        if activity.output { return "Pause a reprodução no Mac para concluir a instalação. Alguns apps mantêm o áudio ativo mesmo pausados; nesse caso, feche o app de mídia." }
+        if preparing || switchModel?.busy == true || switchModel?.transportIsSettling == true { return "Aguardando a conexão dos Buds terminar de alternar." }
+        if switchModel?.recoveryPending == true { return "Aguardando a restauração automática do som do Mac." }
+        if settingsModel?.toolInProgress == true { return "Finalize a busca ou o teste dos Buds para instalar." }
+        if requireDrain && !settingsOperationsDrained() { return "Aguardando os ajustes dos Buds terminarem de encerrar." }
+        return nil
     }
 
     private static func prepareAppUpdateShutdown() async {

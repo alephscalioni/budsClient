@@ -154,4 +154,60 @@ final class NativeAppUpdateConfigurationTests: XCTestCase {
             }
         }
     }
+
+    @MainActor func testShutdownCancelsPendingReadBeforeRequiringItsDrain() async {
+        var pendingRead = true
+        var preparations = 0
+        let ready = await NativeAppUpdateSafetyPolicy.prepare(
+            isSafeToInstall: { !pendingRead }, canPrepareShutdown: { true },
+            requestGracefulShutdown: { preparations += 1; pendingRead = false },
+            sleep: { XCTFail("A cancellable read must not prevent its cancellation") })
+        XCTAssertTrue(ready)
+        XCTAssertEqual(preparations, 1)
+    }
+
+    @MainActor func testAudioBlockerWaitsThenInstallationStillRequiresTheFinalDrain() async {
+        var playing = true
+        var draining = true
+        var waits = 0
+        var preparations = 0
+        let ready = await NativeAppUpdateSafetyPolicy.prepare(
+            isSafeToInstall: { !playing && !draining }, canPrepareShutdown: { !playing },
+            requestGracefulShutdown: { preparations += 1 },
+            sleep: {
+                waits += 1
+                if waits == 1 {
+                    XCTAssertEqual(preparations, 0, "Do not stop a running call or player")
+                    playing = false
+                } else {
+                    XCTAssertEqual(preparations, 1)
+                    draining = false
+                }
+            })
+        XCTAssertTrue(ready)
+        XCTAssertEqual(waits, 2)
+        XCTAssertEqual(preparations, 1)
+    }
+
+    @MainActor func testCancellationWhileBlockedNeverRequestsShutdown() async {
+        var preparations = 0
+        let task = Task { @MainActor in
+            await NativeAppUpdateSafetyPolicy.prepare(
+                isSafeToInstall: { false }, canPrepareShutdown: { false },
+                requestGracefulShutdown: { preparations += 1 })
+        }
+        task.cancel()
+        let ready = await task.value
+        XCTAssertFalse(ready)
+        XCTAssertEqual(preparations, 0)
+    }
+
+    @MainActor func testBackgroundDownloadPreservesInstallOnQuitWithoutStartingShutdown() {
+        var preparations = 0
+        let updater = NativeAppUpdater(isSafeToInstall: { true }, requestGracefulShutdown: { preparations += 1 })
+        XCTAssertFalse(updater.scheduleInstallationOnQuit(), "Sparkle retains its scheduler and the app stays running")
+        XCTAssertTrue(updater.requiresSafeTermination)
+        XCTAssertFalse(updater.postponingInstallation)
+        XCTAssertEqual(preparations, 0)
+    }
 }
