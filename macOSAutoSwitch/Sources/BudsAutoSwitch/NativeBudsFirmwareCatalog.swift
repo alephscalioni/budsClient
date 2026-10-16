@@ -12,7 +12,7 @@ import Foundation
     typealias Loader = @Sendable (URL) async throws -> Data
     private let load: Loader
     private var address = ""
-    private var model: NativeBudsFirmware.Model?
+    private var model: SamsungBudsModelProfile?
     private var installed: String?
     private var entries: [Entry] = []
     private var task: Task<Void, Never>?
@@ -25,7 +25,7 @@ import Foundation
     deinit { task?.cancel() }
 
     func select(address: String, model: String?, installed: String?) {
-        let next = model.flatMap(NativeBudsFirmware.Model.init(rawValue:))
+        let next = model.flatMap(SamsungBudsModelProfile.init(rawValue:))
         if self.address != address || self.model != next {
             task?.cancel(); task = nil; generation = UUID(); entries = []; checkedAt = nil; error = ""; busy = false
         }
@@ -70,19 +70,19 @@ import Foundation
         ]
     }
 
-    static func validVersion(_ value: String?, model: NativeBudsFirmware.Model) -> String? {
-        guard let value, value.utf8.count == 12, value.hasPrefix(model.identifier),
+    static func validVersion(_ value: String?, model: SamsungBudsModelProfile) -> String? {
+        guard let value, value.utf8.count == model.firmwarePrefix.utf8.count + 8, value.hasPrefix(model.firmwarePrefix),
               value.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) }) else { return nil }
         return value
     }
 
     static func newer(_ candidate: String, than current: String?) -> Bool? {
-        guard let current, current.utf8.count == 12, candidate.utf8.count == 12,
-              candidate.prefix(9) == current.prefix(9) else { return nil }
+        guard let current, [12, 13].contains(current.utf8.count), candidate.utf8.count == current.utf8.count,
+              candidate.dropLast(3) == current.dropLast(3) else { return nil }
         return candidate.suffix(3).lexicographicallyPrecedes(current.suffix(3)) ? false : candidate.suffix(3) != current.suffix(3)
     }
 
-    static func parse(_ data: Data, model: NativeBudsFirmware.Model) throws -> [Entry] {
+    static func parse(_ data: Data, model: SamsungBudsModelProfile) throws -> [Entry] {
         guard data.count <= 1_048_576 else { throw URLError(.dataLengthExceedsMaximum) }
         let decoded = try JSONDecoder().decode([Entry].self, from: data)
         guard decoded.count <= 1000 else { throw URLError(.dataLengthExceedsMaximum) }

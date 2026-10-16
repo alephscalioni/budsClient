@@ -5,10 +5,15 @@ import Darwin
     static func runIfRequested() -> Bool {
         let args = CommandLine.arguments
         guard args.contains(NativeBudsSettingsWire.flag) else { return false }
-        guard args.count == 6, args[1] == NativeBudsSettingsWire.flag, args[2] == "--address",
+        guard [6, 8].contains(args.count), args[1] == NativeBudsSettingsWire.flag, args[2] == "--address",
               args[4] == "--owner-pid", let owner = Int32(args[5]), owner > 1, owner == getppid(),
               MacAudio.normalize(args[3]).count == 12 else { exit(64) }
-        let session = Session(address: args[3])
+        let profile: SamsungBudsModelProfile?
+        if args.count == 8 {
+            guard args[6] == "--model", let selected = SamsungBudsModelProfile(rawValue: args[7]) else { exit(64) }
+            profile = selected
+        } else { profile = nil }
+        let session = Session(address: args[3], profile: profile)
         session.start()
         while getppid() == owner && kill(owner, 0) == 0 && !session.done {
             RunLoop.current.run(until: Date().addingTimeInterval(0.025))
@@ -24,7 +29,9 @@ import Darwin
 
     @MainActor private final class Session {
         let address: String
-        let transport = NativeBudsTransport(configuration: .sppNew)
+        let transport: NativeBudsTransport
+        private var profile: SamsungBudsModelProfile?
+        private var observedStatus: SamsungBudsSettingsPacket.Status?
         var done = false
         private var closing = false
         private var verified = false
@@ -41,8 +48,9 @@ import Darwin
         private var placements: (SamsungBudsSettingsPacket.Placement, SamsungBudsSettingsPacket.Placement)?
         private var placementAt: TimeInterval?
         private var output: NativeBudsSettingsOutput?
-        init(address: String) {
-            self.address = address
+        init(address: String, profile: SamsungBudsModelProfile?) {
+            self.address = address; self.profile = profile
+            transport = NativeBudsTransport(configuration: profile.map { .settings($0) } ?? .sppNew)
             output = try? NativeBudsSettingsOutput { [weak self] in Task { @MainActor in self?.stop() } }
         }
         func emit(_ value: [String: Any]) {
@@ -53,11 +61,15 @@ import Darwin
             guard output != nil else { done = true; return }
             transport.onSettingsFrame = { [weak self] frame in
                 guard let self, !self.closing else { return }
-                if let physical = SamsungBudsSettingsPacket.physicalBuds3Pro(frame) {
+                let identified = self.profile ?? SamsungBudsModelProfile.identify(frame)
+                if let identified, let physical = SamsungBudsModelProfile.physical(frame, model: identified.rawValue) {
                     guard physical else { self.fail("O estado físico identifica outro modelo de Buds."); return }
-                    self.verified = true; self.observedAt = ProcessInfo.processInfo.systemUptime
+                    self.profile = identified; self.verified = true
+                    self.observedStatus = SamsungBudsSettingsPacket.status(frame, model: identified.rawValue)
+                    self.observedAt = ProcessInfo.processInfo.systemUptime
                 }
-                if let placements = NativeBudsToolsPacket.placements(frame) {
+                let full = frame.command == 0x61 ? self.observedStatus : nil
+                if let placements = full.map({ ($0.leftPlacement, $0.rightPlacement) }) ?? NativeBudsToolsPacket.placements(frame, profile: self.profile) {
                     self.placements = placements; self.placementAt = ProcessInfo.processInfo.systemUptime
                     if let kind = self.toolWatchdog.kind,
                        (kind == .find && (placements.0 != .idle || placements.1 != .idle))
@@ -71,7 +83,7 @@ import Darwin
                 if self.toolWatchdog.kind == .fit, NativeBudsToolsPacket.fitResult(frame) != nil { self.stopTool() }
                 guard !frame.isFragment, [UInt8(0x61), 0x42, 0x77, 0x60, 0x9E, 0xA1, 0xA3, 0x69, 0xB4].contains(frame.command) else { return }
                 self.emit(["event": "frame", "command": Int(frame.command), "payload": frame.payload.base64EncodedString(),
-                           "uptime": ProcessInfo.processInfo.systemUptime, "observed_at": Date().timeIntervalSince1970])
+                           "legacy_framing": frame.legacyFraming, "uptime": ProcessInfo.processInfo.systemUptime, "observed_at": Date().timeIntervalSince1970])
             }
             transport.onWriteComplete = { [weak self] id in
                 guard let self else { return }
@@ -103,6 +115,22 @@ import Darwin
                 } catch { if !self.closing { self.fail(error.localizedDescription) } }
             }
         }
+        private func helperAllows(_ frame: SamsungBudsSettingsPacket.Frame) -> Bool {
+            guard let profile else { return false }
+            if let level = SamsungBudsSettingsPacket.Level.forCommand(frame.command) {
+                return frame.payload.count == 1 && observedStatus?.levels[level] != nil
+                    && level.range(model: profile.rawValue)?.contains(Int(frame.payload[0])) == true
+            }
+            if frame.command == 0x90 {
+                // The parent merges exact ACK + SDK evidence between writes.
+                // This process enforces shape/revision, not a stale bootstrap's
+                // gesture values; otherwise the second valid edit is rejected.
+                guard let observedStatus, frame.payload.count == profile.touchPayloadLength(revision: observedStatus.revision) else { return false }
+                return SamsungBudsSettingsPacket.acknowledges(.init(command: 0x42,
+                    payload: Data([frame.command]) + frame.payload, isFragment: false), command: frame.command, payload: Array(frame.payload))
+            }
+            return profile.allows(command: frame.command, payload: Array(frame.payload), status: observedStatus)
+        }
         private func command(_ value: [String: Any]) {
             guard let event = value["event"] as? String else { fail("Comando de serviço inválido."); return }
             if event == "close" { stop(); return }
@@ -111,6 +139,7 @@ import Darwin
                   let encoded = value["packet"] as? String, encoded.utf8.count <= 1360,
                   let data = Data(base64Encoded: encoded), NativeBudsSettingsWire.permittedWrite(data),
                   let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(data),
+                  helperAllows(frame),
                   frame.command != 0x90 || observedAt.map({ ProcessInfo.processInfo.systemUptime - $0 <= 15 }) == true else {
                 fail("Comando sem sessão física válida ou não permitido."); return
             }
@@ -120,7 +149,7 @@ import Darwin
                         observedAt: placementAt, now: ProcessInfo.processInfo.systemUptime) else {
                         fail("Posição dos fones não permite iniciar esta ferramenta. Atualize a leitura."); return
                     }
-                    if frame.command == 0xA6 || (frame.command == 0x9D && Array(frame.payload) == [1]) {
+                    if (frame.command == 0xA6 || frame.command == 0xA0) || (frame.command == 0x9D && Array(frame.payload) == [1]) {
                         let now = ProcessInfo.processInfo.systemUptime
                         guard toolWatchdog.kind == nil, observedAt.map({ now >= $0 && now - $0 <= 5 }) == true,
                               (try? MacAudio.activity().input) == false else {

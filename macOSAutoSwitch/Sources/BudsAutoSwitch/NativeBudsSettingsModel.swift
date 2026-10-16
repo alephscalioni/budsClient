@@ -18,6 +18,7 @@ import CoreFoundation
     var sessionAlive: () -> Bool? = { nil }
     var diagnostics: () -> [String: Any] = { [:] }
     var toolsPermission: () -> Bool = { false }
+    var configureModel: (String?) -> Void = { _ in }
 
     static func live(toolsPermission: @escaping () -> Bool = { false }) -> Self {
         let connection = NativeBudsSettingsConnection()
@@ -29,7 +30,8 @@ import CoreFoundation
             send: { try connection.send($0) }, close: { connection.releaseTransaction() },
             reset: { connection.reset() }, statusTimestamp: { connection.observation },
             continuousStatus: { connection.continuous }, sessionAlive: { connection.alive },
-            diagnostics: { connection.diagnostics }, toolsPermission: toolsPermission)
+            diagnostics: { connection.diagnostics }, toolsPermission: toolsPermission,
+            configureModel: { connection.configureModel($0) })
     }
 }
 
@@ -37,7 +39,7 @@ import CoreFoundation
     typealias Packet = SamsungBudsSettingsPacket
 
     enum Action: Equatable {
-        case refresh, noise(Packet.NoiseMode), equalizer(Int), touch(Bool), mediaControls(Bool)
+        case refresh, noise(Packet.NoiseMode), level(Packet.Level, Int), equalizer(Int), touch(Bool), mediaControls(Bool)
         case gesture(Packet.Gesture, Bool), setting(Packet.Setting, Int)
         case find(NativeBudsToolsPacket.Target), fitTest
         case customEqualizerRead, customEqualizer([Int]), info
@@ -57,6 +59,12 @@ import CoreFoundation
             case "device.noise":
                 guard let name = request["mode"] as? String, let mode = Packet.NoiseMode(name: name) else { return nil }
                 return .noise(mode)
+            case "device.level":
+                guard let kind = request["kind"] as? String, let level = Packet.Level(rawValue: kind),
+                      let value = request["value"] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+                      value.doubleValue.isFinite, value.doubleValue.rounded() == value.doubleValue,
+                      (0...4).contains(value.doubleValue) else { return nil }
+                return .level(level, value.intValue)
             case "device.equalizer":
                 guard let value = request["preset"] as? NSNumber,
                       CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
@@ -96,7 +104,7 @@ import CoreFoundation
         let name: String
         let model: String?
         let connectionEpoch: UUID?
-        var supported: Bool { model == "Buds3Pro" }
+        var supported: Bool { model.flatMap(SamsungBudsModelProfile.init(rawValue:)) != nil }
         var inspectable: Bool { model == nil || supported }
     }
     private enum Phase { case idle, reading, openingCommand, command, customWrite, customRead, firmwareRead }
@@ -159,6 +167,7 @@ import CoreFoundation
     private var customSelectionArmed = false
     private var deviceRequestActive = false
     private var ambientLevel: Int?
+    private var levels: [Packet.Level: Int] = [:]
     private var touchEnabled: Bool?
     private var mediaControlsEnabled: Bool?
     private var mediaControlsMixed = false
@@ -169,7 +178,7 @@ import CoreFoundation
     private var preservedTouch: Packet.TouchControls?
     private var settings: [Packet.Setting: Int] = [:]
     private(set) var busy = false
-    private(set) var status = "Selecione os Buds3 Pro para ler os ajustes."
+    private(set) var status = "Selecione os Buds para ler os ajustes."
     private(set) var error: String?
     private(set) var batterySnapshot: BudsBatterySnapshot?
     private var leftPlacement: Packet.Placement?
@@ -203,14 +212,13 @@ import CoreFoundation
     /// probe; an explicit different model always wins over a suggestive name.
     func select(address: String, name: String, model: String?, blocked: Bool, connectionEpoch: UUID? = nil) {
         let address = BudsBatterySnapshot.normalize(address)
-        let canonical = name.lowercased().filter { $0.isLetter || $0.isNumber }
         let identified = model.flatMap { $0.isEmpty ? nil : $0 }
-            ?? (["buds3pro", "galaxybuds3pro"].contains(canonical) ? "Buds3Pro" : nil)
+            ?? SamsungBudsModelProfile.resolve(model: nil, name: name)?.rawValue
         let next = address.count == 12 ? Selection(address: address, name: name, model: identified, connectionEpoch: connectionEpoch) : nil
         // A presentation-cache model upgrade or renamed paired alias is not a
         // different radio identity. Preserve physically verified state/session.
         let differentDevice = next?.address != selection?.address
-            || (next?.model != selection?.model && next?.inspectable == false)
+            || (next?.model != selection?.model && selection?.model != nil)
         let changed = differentDevice || next?.connectionEpoch != selection?.connectionEpoch
         let wasBlocked = self.blocked
         if changed {
@@ -224,9 +232,10 @@ import CoreFoundation
             suspend()
         }
         selection = next; self.blocked = blocked
+        environment.configureModel(next?.model)
         if blocked { status = "Aguarde o término da alternância e da recuperação de áudio para ajustar os Buds." }
-        else if next?.supported != true { status = "Ajustes nativos disponíveis somente para Buds3 Pro identificados." }
-        else if changed || wasBlocked { status = "Atualize para ler os ajustes dos Buds3 Pro conectados ao Mac." }
+        else if next?.supported != true { status = "Identifique o modelo dos Buds para ler os ajustes disponíveis." }
+        else if changed || wasBlocked { status = "Atualize para ler os ajustes dos Buds conectados ao Mac." }
     }
 
     /// Pure snapshot: reading this every 600 ms never probes or opens Bluetooth.
@@ -244,11 +253,14 @@ import CoreFoundation
             return age >= 0 && age <= 15
         } == true
         let canReadDevice = canControl && !busy && deviceStatusFresh
+        let profile = (lastObservation?.status.model ?? selection?.model).flatMap(SamsungBudsModelProfile.init(rawValue:))
         var message = status
         if !busy, !alive { message = "Canal de ajustes encerrado. Atualize para uma nova leitura." }
         else if !busy, link != nil, !fresh, canControl { message = "Leitura anterior. Atualize para confirmar a conexão e os ajustes." }
         return ["available": true, "busy": busy, "connected": connected.map { $0 as Any } ?? NSNull(),
             "model_verified": physicalModelVerified,
+            "model": profile?.rawValue as Any? ?? NSNull(),
+            "noise_modes": profile?.noiseModes.map { $0.name } ?? [],
             "read_fresh": readFresh,
             "observation_revision": observationRevision,
             "last_observation": lastObservationFields,
@@ -263,10 +275,16 @@ import CoreFoundation
             "equalizer_custom": (alive ? rawEqualizer.map { $0 == SamsungBudsCustomEqualizer.customSelection } : nil) as Any? ?? NSNull(),
             "custom_eq_bands": customBands as Any? ?? NSNull(),
             "custom_eq_observed_at": customObservedDate?.timeIntervalSince1970 as Any? ?? NSNull(),
-            "can_custom_eq_read": canReadDevice, "can_custom_eq_write": canReadDevice,
+            "can_custom_eq_read": canReadDevice && profile?.supportsCustomEqualizer == true,
+            "can_custom_eq_write": canReadDevice && profile?.supportsCustomEqualizer == true,
+            "supports_custom_eq": profile?.supportsCustomEqualizer == true,
             "firmware_version": firmwareVersion as Any? ?? NSNull(),
             "firmware_observed_at": firmwareObservedDate?.timeIntervalSince1970 as Any? ?? NSNull(),
-            "can_info": canReadDevice,
+            "can_info": canReadDevice && profile?.supportsInfo == true,
+            "levels": alive ? Dictionary(uniqueKeysWithValues: levels.compactMap { kind, value -> (String, Any)? in
+                guard let model = profile?.rawValue, let range = kind.range(model: model) else { return nil }
+                return (kind.rawValue, ["value": value, "minimum": range.lowerBound, "maximum": range.upperBound])
+            }) : [:],
             "ambient_level": (alive ? ambientLevel : nil).map { $0 as Any } ?? NSNull(),
             "touch_enabled": (alive ? touchEnabled : nil).map { $0 as Any } ?? NSNull(),
             "media_controls_enabled": (alive ? mediaControlsEnabled : nil).map { $0 as Any } ?? NSNull(),
@@ -275,7 +293,8 @@ import CoreFoundation
             "tools": ["active": toolInProgress, "kind": toolKind?.rawValue as Any? ?? NSNull(),
                 // Starting always obtains fresh physical identity and placement.
                 // A parked reading must not require a separate refresh click.
-                "can_find": canStartTool, "can_fit": canStartTool,
+                "can_find": canStartTool && profile?.supportsFind == true,
+                "can_fit": canStartTool && profile?.supportsFitTest == true,
                 "left_placement": (alive ? leftPlacement?.name : nil) as Any? ?? NSNull(),
                 "right_placement": (alive ? rightPlacement?.name : nil) as Any? ?? NSNull(),
                 "fit_result": fitResult?.fields as Any? ?? NSNull(),
@@ -304,6 +323,9 @@ import CoreFoundation
         guard !busy else { return } // One command at a time; never queue stale UI intents.
         guard let selected = selection, selected.inspectable, !blocked else {
             error = "Os ajustes não estão disponíveis para a seleção atual."; return
+        }
+        if case .level(_, let value) = action, !(0...4).contains(value) {
+            error = "Nível de controle de ruído inválido."; return
         }
         if case .equalizer(let preset) = action, !(0...5).contains(preset) {
             error = "Predefinição de equalizador inválida."; return
@@ -346,7 +368,9 @@ import CoreFoundation
                 // Waiting only immediately before write was still rejected by
                 // the device. The passing lab sequence waited before reopening;
                 // no settings channel is held during this wait.
-                if case .noise = action, let last = self.lastNoiseConfirmation {
+                let noiseAction: Bool
+                switch action { case .noise, .level: noiseAction = true; default: noiseAction = false }
+                if noiseAction, let last = self.lastNoiseConfirmation {
                     let remaining = last + 1.5 - self.environment.now()
                     if remaining > 0 {
                         self.status = "Aguardando a mudança anterior do controle de ruído…"
@@ -368,6 +392,24 @@ import CoreFoundation
                     throw NativeBudsError(message: "Sem leitura válida dos ajustes.")
                 }
                 self.apply(observed, selected: selected, at: observedAt, date: observedDate)
+                if noiseAction {
+                    // An absolute noise mode can use this freshly verified
+                    // physical session. Reopening and repeating the OS link
+                    // probe adds latency without increasing command evidence.
+                    guard self.environment.now() >= observedAt,
+                          self.environment.now() - observedAt <= 15 || self.environment.continuousStatus() else {
+                        throw NativeBudsError(message: "Atualize a leitura dos Buds antes de mudar o modo de ruído.")
+                    }
+                    let command = try self.command(action, observed: observed)
+                    self.expectedCommand = command.0; self.expectedPayload = command.1
+                    self.phase = .command; self.lastObservation?.mayHaveChanged = true
+                    self.writeID = try self.environment.send(Packet.frame(command: command.0, payload: command.1))
+                    try await self.wait(token, session: readSession)
+                    try self.check(token, session: readSession)
+                    self.applyConfirmed(action)
+                    self.finish(token, status: self.confirmedStatus)
+                    return
+                }
                 self.closeSession()
                 if action != .refresh {
                     // Reject unrepresentable touch controls before opening for a write.
@@ -561,6 +603,10 @@ import CoreFoundation
     }
     private func received(_ frame: Packet.Frame, token: UInt64, session: UUID) {
         guard active(token), self.session == session, !frame.isFragment else { return }
+        if frame.command == 0x61, let model = selection?.model,
+           SamsungBudsModelProfile.physical(frame, model: model) == false {
+            abort(token, message: "O estado físico identifica outro modelo de Buds. Nenhum comando foi enviado."); return
+        }
         if deviceRequestActive {
             // The helper delivers its verified bootstrap before open() returns
             // and before sessionAlive becomes true. Only a submitted device
@@ -570,7 +616,7 @@ import CoreFoundation
                 abort(token, message: "Canal encerrado antes de confirmar a leitura do dispositivo."); return
             }
             if frame.command == 0x61 {
-                guard let observed = Packet.status(frame, model: "Buds3Pro"), observed.physicalModelVerified else {
+                guard let observed = Packet.status(frame, model: selection?.model ?? SamsungBudsModelProfile.identify(frame)?.rawValue ?? ""), observed.physicalModelVerified else {
                     abort(token, message: "Modelo físico divergente ou não verificável durante a operação."); return
                 }
                 // Complete status is identity evidence, never a substitute for
@@ -585,7 +631,7 @@ import CoreFoundation
             }
         }
         if phase == .reading || phase == .openingCommand {
-            if let observed = Packet.status(frame, model: selection?.model ?? (Packet.physicalBuds3Pro(frame) == true ? "Buds3Pro" : "")) {
+            if let observed = Packet.status(frame, model: selection?.model ?? SamsungBudsModelProfile.identify(frame)?.rawValue ?? "") {
                 let stamp = environment.statusTimestamp()
                 readStatus = observed; readObservedAt = stamp?.0 ?? environment.now(); readObservedDate = stamp?.1 ?? environment.date()
                 resumeIfReady()
@@ -603,7 +649,7 @@ import CoreFoundation
                     abort(token, message: "Leituras de equalizador divergentes na mesma solicitação."); return
                 }
                 if pendingCurve == nil { pendingCurve = curve; pendingReplyDate = environment.date() }
-            } else if phase == .firmwareRead, let version = SamsungBudsFirmwareVersion.version(frame) {
+            } else if phase == .firmwareRead, let version = SamsungBudsFirmwareVersion.version(frame, model: lastObservation?.status.model ?? selection?.model ?? "") {
                 if let previous = pendingVersion, previous != version {
                     abort(token, message: "Versões de firmware divergentes na mesma solicitação."); return
                 }
@@ -613,10 +659,11 @@ import CoreFoundation
         }
         guard phase == .command, let command = expectedCommand else { return }
         if toolKind != nil {
-            if (frame.command == 0x60 || frame.command == 0x61), NativeBudsToolsPacket.placements(frame) == nil {
+            let profile = (lastObservation?.status.model ?? selection?.model).flatMap(SamsungBudsModelProfile.init(rawValue:))
+            if (frame.command == 0x60 || frame.command == 0x61), NativeBudsToolsPacket.placements(frame, profile: profile) == nil {
                 abort(token, message: "Não foi possível confirmar a posição dos fones. Ferramenta interrompida."); return
             }
-            if let placement = NativeBudsToolsPacket.placements(frame),
+            if let placement = NativeBudsToolsPacket.placements(frame, profile: profile),
                (toolKind == .find && (placement.0 != .idle || placement.1 != .idle))
                 || (toolKind == .fit && (placement.0 != .wearing || placement.1 != .wearing)) {
                 abort(token, message: "A posição dos fones mudou. A ferramenta foi interrompida."); return
@@ -629,7 +676,7 @@ import CoreFoundation
             resumeIfReady(); return
         }
         if frame.command == 0x42 {
-            if Packet.acknowledges(frame, command: command, payload: expectedPayload)
+            if Packet.acknowledges(frame, command: command, payload: expectedPayload, profile: (lastObservation?.status.model ?? selection?.model).flatMap(SamsungBudsModelProfile.init(rawValue:)))
                 || (customSelectionArmed && command == SamsungBudsCustomEqualizer.selectionCommand
                     && expectedPayload == [SamsungBudsCustomEqualizer.customSelection]
                     && SamsungBudsCustomEqualizer.acknowledgesSelection(frame)) { echoMatched = true }
@@ -758,7 +805,8 @@ import CoreFoundation
         case .find(let target):
             findStopped = false
             let started = environment.now()
-            try await sendTool(0xA6, [], waitingFor: .write, token: token, session: session,
+            let startCommand = SamsungBudsModelProfile(rawValue: readStatus?.model ?? selection?.model ?? "")?.findStartCommand(revision: readStatus?.revision ?? 0) ?? 0xA6
+            try await sendTool(startCommand, [], waitingFor: .write, token: token, session: session,
                 failure: "A transmissão da busca não foi confirmada. Parada solicitada.")
             status = "Procurando os Buds…"
             // Samsung starts the search before applying per-side mute. A
@@ -794,9 +842,31 @@ import CoreFoundation
         guard observed.physicalModelVerified else {
             throw NativeBudsError(message: "Modelo físico não confirmado pelo estado dos Buds. Nenhuma alteração foi enviada.")
         }
+        if case .noise(let mode) = action, SamsungBudsModelProfile(rawValue: observed.model)?.noiseModes.contains(mode) != true {
+            throw NativeBudsError(message: "Este modo de ruído não está disponível neste modelo.")
+        }
+        let result = try makeCommand(action, observed: observed)
+        guard let profile = SamsungBudsModelProfile(rawValue: observed.model),
+              profile.allows(command: result.0, payload: result.1, status: observed) else {
+            throw NativeBudsError(message: "Este ajuste não está disponível neste modelo de Buds.")
+        }
+        return result
+    }
+    private func makeCommand(_ action: Action, observed: Packet.Status) throws -> (UInt8, [UInt8]) {
         switch action {
-        case .noise(let mode): return (0x78, [mode.rawValue])
-        case .equalizer(let preset): return (0x86, [UInt8(preset + 1)])
+        case .level(let kind, let value):
+            guard kind.accepts(value, status: observed), observed.noise == (kind == .ambient ? .ambient : .anc) else {
+                throw NativeBudsError(message: "Ative o modo correspondente e atualize a leitura para ajustar a intensidade.")
+            }
+            return (kind.command, [UInt8(value)])
+        case .noise(let mode):
+            let profile = SamsungBudsModelProfile(rawValue: observed.model)
+            if profile == .buds || profile == .budsPlus { return (0x80, [mode == .ambient ? 1 : 0]) }
+            if profile == .budsLive { return (0x98, [mode == .anc ? 1 : 0]) }
+            return (0x78, [mode.rawValue])
+        case .equalizer(let preset):
+            if observed.model == "Buds" { return (0x86, [preset == 0 ? 0 : 1, UInt8(preset == 0 ? 5 : preset + 4)]) }
+            return (0x86, [UInt8(preset + 1)])
         case .customEqualizerRead: return (SamsungBudsCustomEqualizer.readCommand, [])
         case .customEqualizer(let bands):
             guard let payload = SamsungBudsCustomEqualizer.writePayload(bands) else {
@@ -815,13 +885,13 @@ import CoreFoundation
             }
             return (0x90, controls.mediaPayload(enabled: enabled))
         case .gesture(let gesture, let enabled):
-            guard let controls = observed.touchControls else {
-                throw NativeBudsError(message: "Atualize a leitura para preservar os outros gestos dos Buds.")
+            guard let controls = observed.touchControls, controls.fields[gesture.rawValue] != nil else {
+                throw NativeBudsError(message: "Este gesto não está disponível no modelo ou na leitura atual.")
             }
             return (0x90, controls.payload(changing: gesture, enabled: enabled))
         case .find:
             guard observed.bothOutside else { throw NativeBudsError(message: "Retire os dois fones dos ouvidos antes de iniciar a busca sonora.") }
-            return (0xA6, [])
+            return (SamsungBudsModelProfile(rawValue: observed.model)?.findStartCommand(revision: observed.revision) ?? 0xA6, [])
         case .fitTest:
             guard observed.wearingBoth else { throw NativeBudsError(message: "Coloque os dois fones nos ouvidos para testar a vedação.") }
             return (0x9D, [1])
@@ -840,9 +910,9 @@ import CoreFoundation
         leftPlacement = observed.leftPlacement; rightPlacement = observed.rightPlacement
         mediaControlsEnabled = observed.touchControls?.mediaEnabled
         mediaControlsMixed = observed.touchControls != nil && mediaControlsEnabled == nil
-        settings = observed.settings
+        settings = observed.settings; levels = observed.levels
         batterySnapshot = BudsBatterySnapshot(address: selected.address, name: selected.name,
-            model: "Buds3Pro", icon: nil, left: observed.left, right: observed.right,
+            model: observed.model, icon: nil, left: observed.left, right: observed.right,
             casePercent: observed.casePercent, observedAt: date.timeIntervalSince1970)
         // A replayed bootstrap is not a newly observed success. It must not
         // replenish the host's bounded read-retry budget or refresh its date.
@@ -863,6 +933,10 @@ import CoreFoundation
             "equalizer_raw": state.rawEqualizer,
             "equalizer_enabled": state.rawEqualizer != 0,
             "equalizer_custom": state.rawEqualizer == SamsungBudsCustomEqualizer.customSelection,
+            "levels": Dictionary(uniqueKeysWithValues: state.levels.compactMap { kind, value -> (String, Any)? in
+                guard let range = kind.range(model: state.model) else { return nil }
+                return (kind.rawValue, ["value": value, "minimum": range.lowerBound, "maximum": range.upperBound])
+            }),
             "ambient_level": state.ambientLevel,
             "touch_enabled": state.touchEnabled,
             "media_controls_enabled": state.touchControls?.mediaEnabled.map { $0 as Any } ?? NSNull(),
@@ -874,6 +948,8 @@ import CoreFoundation
     }
     private func applyConfirmed(_ action: Action) {
         switch action {
+        case .level(let kind, let value):
+            levels[kind] = value; if kind == .ambient { ambientLevel = value }; lastNoiseConfirmation = environment.now()
         case .noise(let mode): noise = mode; lastNoiseConfirmation = environment.now()
         case .equalizer(let preset): equalizer = preset; rawEqualizer = UInt8(preset + 1)
         case .customEqualizer: equalizer = nil; rawEqualizer = SamsungBudsCustomEqualizer.customSelection
@@ -904,7 +980,7 @@ import CoreFoundation
     }
     private func clearSettings() {
         noise = nil; equalizer = nil; rawEqualizer = nil; ambientLevel = nil; touchEnabled = nil; preservedTouch = nil
-        mediaControlsEnabled = nil; mediaControlsMixed = false; settings = [:]
+        mediaControlsEnabled = nil; mediaControlsMixed = false; settings = [:]; levels = [:]
         leftPlacement = nil; rightPlacement = nil
     }
     private func finish(_ token: UInt64, status: String) {

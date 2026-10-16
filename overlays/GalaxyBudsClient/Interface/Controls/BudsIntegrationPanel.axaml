@@ -177,8 +177,7 @@
                 <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Spacing="8">
                     <TextBlock Name="SwitchError" TextWrapping="Wrap" IsVisible="False" Foreground="{StaticResource PanelWarning}" Margin="0,8,0,0" />
                     <StackPanel Name="RecoveryPanel" Spacing="6" IsVisible="False" Margin="0,8,0,0">
-                        <TextBlock Text="Pause a mídia no Mac antes de restaurar o som." TextWrapping="Wrap" Foreground="{StaticResource PanelWarning}" />
-                        <Button Name="Restore" Content="Restaurar som do Mac" Click="OnRestore" HorizontalAlignment="Left" AutomationProperties.Name="Restaurar som do Mac" />
+                        <TextBlock Text="O som do Mac será restaurado automaticamente quando não houver áudio ativo." TextWrapping="Wrap" Foreground="{StaticResource PanelWarning}" />
                     </StackPanel>
                     <Button Name="Stop" Content="Pausar alternância" Click="OnRestore" HorizontalAlignment="Left" IsVisible="False" AutomationProperties.Name="Pausar ou cancelar alternância" />
                 </StackPanel>

@@ -50,15 +50,62 @@ extension SamsungBudsSettingsPacket {
             // Upstream AdvancedPageViewModel inverts call-path control.
             return UInt8(self == .callAudioToBuds ? 1 - value : value)
         }
-        func observedValue(_ payload: [UInt8]) -> Int? {
-            guard payload.indices.contains(statusOffset), values.contains(Int(payload[statusOffset])) else { return nil }
-            let value = Int(payload[statusOffset])
+        /// Source-backed offset and minimum status revision. No modern offset
+        /// is reused for Buds/Plus/Live/Pro merely because the packet is long.
+        func observation(model: String, revision: Int) -> Int? {
+            guard let profile = SamsungBudsModelProfile(rawValue: model) else { return nil }
+            let entry: (offset: Int, minimum: Int)?
+            switch profile {
+            case .buds: entry = nil
+            case .budsPlus:
+                switch self {
+                case .sidetone: entry = (19, 8)
+                case .callAudioToBuds: entry = (23, 13)
+                default: entry = nil
+                }
+            case .budsLive:
+                switch self {
+                case .stereoBalance: entry = (22, 7)
+                case .callAudioToBuds: entry = (23, 8)
+                default: entry = nil
+                }
+            case .budsPro:
+                switch self {
+                case .conversationDetection: entry = (26, 0)
+                case .conversationTimeout: entry = (27, 0)
+                case .stereoBalance: entry = (29, 5)
+                case .oneEarbudNoiseControl: entry = (32, 8)
+                case .sidetone: entry = (36, 9)
+                case .callAudioToBuds: entry = (37, 10)
+                }
+            case .buds2:
+                switch self {
+                case .stereoBalance: entry = (25, 0)
+                case .oneEarbudNoiseControl: entry = (28, 3)
+                case .sidetone: entry = (33, 6)
+                case .callAudioToBuds: entry = (34, 7)
+                default: entry = nil
+                }
+            case .buds2Pro:
+                entry = (statusOffset, self == .sidetone || self == .callAudioToBuds ? 1 : 0)
+            default:
+                guard (1...4).contains(revision) else { return nil }
+                if (self == .conversationDetection || self == .conversationTimeout)
+                    && ![.buds3Pro, .buds4Pro].contains(profile) { entry = nil }
+                else { entry = (statusOffset, 1) }
+            }
+            guard let entry, revision >= entry.minimum else { return nil }
+            return entry.offset
+        }
+        func observedValue(_ payload: [UInt8], model: String = "Buds3Pro") -> Int? {
+            guard let revision = payload.first, let offset = observation(model: model, revision: Int(revision)),
+                  payload.indices.contains(offset), values.contains(Int(payload[offset])) else { return nil }
+            let value = Int(payload[offset])
             return self == .callAudioToBuds ? 1 - value : value
         }
-        static func observed(_ payload: [UInt8]) -> [Self: Int] {
-            guard let revision = payload.first, (1...4).contains(revision) else { return [:] }
-            return Dictionary(uniqueKeysWithValues: allCases.compactMap { setting in
-                setting.observedValue(payload).map { (setting, $0) }
+        static func observed(_ payload: [UInt8], model: String = "Buds3Pro") -> [Self: Int] {
+            Dictionary(uniqueKeysWithValues: allCases.compactMap { setting in
+                setting.observedValue(payload, model: model).map { (setting, $0) }
             })
         }
         static func forCommand(_ command: UInt8) -> Self? { allCases.first { $0.command == command } }

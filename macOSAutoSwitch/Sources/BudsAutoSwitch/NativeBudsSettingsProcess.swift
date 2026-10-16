@@ -10,6 +10,11 @@ import Darwin
     private let helper: URL?
     private let drain: NativeBudsOperationDrain
     private var current: Session?
+    private var selectedModel: String?
+    func configureModel(_ model: String?) {
+        guard selectedModel != model else { return }
+        close(); selectedModel = model
+    }
     private var retired: [UUID: Session] = [:]
     private var generation: UInt64 = 0
     private var nextWrite: UInt = 0
@@ -48,7 +53,7 @@ import Darwin
             throw NativeBudsError(message: "O serviço de ajustes não está incluído nesta instalação.")
         }
         frames = 0; bytes = 0; sent = 0; written = 0; events.removeAll(); observationStamp = nil
-        let session = Session(address: address, owner: self, drain: drain)
+        let session = Session(address: address, model: selectedModel, owner: self, drain: drain)
         current = session
         do { try await session.open(helper: helper) }
         catch { if current === session { close() }; throw error }
@@ -66,7 +71,7 @@ import Darwin
         nextWrite += 1
         current.writes.insert(nextWrite)
         if let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(packet),
-           frame.command == 0xA6 || (frame.command == 0x9D && Array(frame.payload) == [1]) {
+           (frame.command == 0xA6 || frame.command == 0xA0) || (frame.command == 0x9D && Array(frame.payload) == [1]) {
             current.requiresSafetyStop = true
         }
         do { try current.send(["event": "write", "id": nextWrite, "packet": packet.base64EncodedString()]) }
@@ -129,6 +134,7 @@ import Darwin
         weak var owner: NativeBudsSettingsProcess?
         let process = Process(), output = Pipe(), input = Pipe()
         let drain: NativeBudsOperationDrain
+        let model: String?
         var writes: Set<UInt> = []
         var opened = false, closing = false, exited = false
         var accepted = false
@@ -140,8 +146,8 @@ import Darwin
         private var reader: NativeBudsSettingsPipe?
         private var deadline: Task<Void, Never>?
         private var termination: Task<Void, Never>?
-        init(address: String, owner: NativeBudsSettingsProcess, drain: NativeBudsOperationDrain) {
-            self.address = address; self.owner = owner; self.drain = drain
+        init(address: String, model: String?, owner: NativeBudsSettingsProcess, drain: NativeBudsOperationDrain) {
+            self.address = address; self.model = model; self.owner = owner; self.drain = drain
         }
         private func retainLease() {
             guard lease == nil else { return }
@@ -157,6 +163,7 @@ import Darwin
                     waiter = continuation; retainLease()
                     process.executableURL = helper
                     process.arguments = [NativeBudsSettingsWire.flag, "--address", address, "--owner-pid", String(getpid())]
+                        + (model.map { ["--model", $0] } ?? [])
                     process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
                     // A child exiting between the check and write must throw,
                     // never deliver SIGPIPE to the app hosting the audio panel.

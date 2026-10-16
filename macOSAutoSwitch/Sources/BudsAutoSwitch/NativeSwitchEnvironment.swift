@@ -18,6 +18,8 @@ import Foundation
     var restore: () async throws -> Void
     var startPlayback: () -> Void
     var stopPlayback: () -> Void
+    /// Locality-filtered intent: unknown is not a pause ACK. Recovery may use
+    /// independently confirmed HAL silence without commanding this client.
     var sample: () async -> MacPlaybackIntent
     var pause: () async throws -> Void
     var activity: () throws -> AudioActivity

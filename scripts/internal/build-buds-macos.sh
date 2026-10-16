@@ -33,6 +33,9 @@ HELPER_SOURCES=(
     "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungMdePacket.swift"
     "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungBudsSettingsPacket.swift"
     "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungBudsSetting.swift"
+    "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungBudsModelProfile.swift"
+    "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungBudsModelCommands.swift"
+    "$ROOT/macOSAutoSwitch/Sources/BudsAutoSwitch/SamsungBudsNoiseLevel.swift"
 )
 ICON="$ROOT/macOSAutoSwitch/Resources/Buds.icns"
 SIGNER="$ROOT/macOSAutoSwitch/scripts/sign-account-research.py"
@@ -119,7 +122,7 @@ PY
     --runtime osx-arm64 --self-contained true --output "$WORK/publish" \
     -p:UseMacOSSDK=false -p:PackNative=true -p:UseAppHost=true \
     -p:PublishSingleFile=false -p:PublishTrimmed=false \
-    -p:RuntimeFrameworkVersion="$BUDS_RUNTIME_VERSION" -p:TargetLatestRuntimePatch=false
+    -p:RuntimeFrameworkVersion="$BUDS_RUNTIME_VERSION" -p:TargetLatestRuntimePatch=false -m:1
 python3 - "$ROOT" "$WORK/managed-inputs.json" "$WORK/publish/Galaxy Buds Manager.runtimeconfig.json" "$BUDS_RUNTIME_VERSION" <<'PY'
 from pathlib import Path
 import hashlib,json,sys

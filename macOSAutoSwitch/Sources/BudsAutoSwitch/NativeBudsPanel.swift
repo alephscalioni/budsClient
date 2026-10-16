@@ -15,6 +15,9 @@ private typealias PanelAction = @convention(c) (UnsafePointer<CChar>?) -> Void
     @Published var readFailed = false
     @Published var avatar: NSImage?
     @Published var feature: String?
+    @Published var requestedNoise: String?
+    private var requestedNoiseAt: Date?
+    private var observedNoiseBusy = false
     @Published var findTarget = "both"
     @Published var controlsExpanded = true
     @Published var toolsExpanded = false
@@ -100,7 +103,7 @@ private typealias PanelAction = @convention(c) (UnsafePointer<CChar>?) -> Void
     func start() {
         guard timer == nil else { return }
         refresh()
-        let next = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
+        let next = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
         timer = next
@@ -122,6 +125,14 @@ private typealias PanelAction = @convention(c) (UnsafePointer<CChar>?) -> Void
               value["account"] is [String: Any] else { readFailed = true; return }
         let priorIdentity = flag(account, "needs_identity")
         root = value; readFailed = false
+        if requestedNoise != nil {
+            observedNoiseBusy = observedNoiseBusy || flag(device, "busy")
+            if !connected || !text(device, "error").isEmpty || (!flag(device, "busy") &&
+                (observedNoiseBusy || text(device, "noise_mode") == requestedNoise ||
+                 requestedNoiseAt.map { Date().timeIntervalSince($0) > 30 } == true)) {
+                requestedNoise = nil; requestedNoiseAt = nil; observedNoiseBusy = false
+            }
+        }
         if account.keys.contains("avatar") {
             avatar = (account["avatar"] as? String).flatMap { Data(base64Encoded: $0) }.flatMap(NSImage.init(data:))
             let revision = number(account, "avatar_revision") ?? -1
@@ -149,6 +160,9 @@ private typealias PanelAction = @convention(c) (UnsafePointer<CChar>?) -> Void
         guard let data = try? JSONSerialization.data(withJSONObject: request),
               let json = String(data: data, encoding: .utf8) else { return }
         actionError = nil
+        if action == "device.noise", let mode = values["mode"] as? String {
+            requestedNoise = mode; requestedNoiseAt = Date(); observedNoiseBusy = false
+        }
         json.withCString { callback($0) }
         #endif
     }
@@ -292,11 +306,10 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
     }
     private var features: some View {
         VStack(alignment: .leading, spacing: 5) {
+        noiseControl
         HStack(spacing: 8) {
-            featureButton("noise", title: "Ruído", value: noiseOptions.first { $0.0 == text(model.displaySettings, "noise_mode") }?.1 ?? model.unavailable, symbol: "waveform")
             featureButton("equalizer", title: "Equalizador", value: eqValue, symbol: "slider.horizontal.3")
-            tile("Ambiente", value: number(model.displaySettings, "ambient_level").flatMap { $0 >= 0 && $0 <= Double(Int32.max) ? "Nível \(Int($0))" : nil } ?? model.unavailable, symbol: "ear.badge.waveform")
-                .help("Nível informado pelos Buds. Para alterar o modo, use Ruído.")
+            featureButton("levels", title: "Intensidade", value: levelSummary, symbol: "slider.horizontal.3")
             featureButton("touch", title: "Gestos", value: flag(model.displaySettings, "media_controls_mixed") ? "Personalizados" : boolean(model.displaySettings, "media_controls_enabled").map { $0 ? "Ativados" : "Desativados" } ?? model.unavailable, symbol: "hand.tap")
         }
         .disabled(!model.canControl).opacity(model.canControl ? 1 : 0.55)
@@ -305,6 +318,26 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 .fixedSize(horizontal: false, vertical: true)
         }
         }
+    }
+    private var noiseControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Controle de ruído").font(.system(size: 11, weight: .medium))
+                Spacer()
+                if model.requestedNoise != nil {
+                    ProgressView().controlSize(.mini)
+                    Text("Aplicando…").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            Picker("Controle de ruído", selection: Binding(
+                get: { model.requestedNoise ?? text(model.displaySettings, "noise_mode") },
+                set: { if $0 != text(model.displaySettings, "noise_mode") { model.send("device.noise", ["mode": $0]) } })) {
+                ForEach(availableNoiseOptions, id: \.0) { option in
+                    Text(option.0 == "anc" ? "ANC" : option.0 == "ambient" ? "Ambiente" : option.1).tag(option.0)
+                }
+            }.pickerStyle(.segmented).labelsHidden()
+                .disabled(!model.canControl || model.requestedNoise != nil)
+        }.padding(.bottom, 8)
     }
     private func settingsObservation(_ reading: NativeBudsPanelReadings.Settings) -> String {
         let format = DateFormatter(); format.dateStyle = Calendar.current.isDateInToday(reading.date) ? .none : .short; format.timeStyle = .short
@@ -322,21 +355,36 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 featureOptions(key, title: title)
             }
     }
+    private var levelSummary: String {
+        let kind = text(model.displaySettings, "noise_mode") == "ambient" ? "ambient" : "anc"
+        guard let levels = model.displaySettings["levels"] as? [String: Any],
+              let level = levels[kind] as? [String: Any], let value = number(level, "value") else { return model.unavailable }
+        if number(level, "maximum") == 1 { return value == 0 ? "Baixa" : "Alta" }
+        return "Nível \(Int(value) + 1)"
+    }
+    private var availableNoiseOptions: [(String, String)] {
+        guard let modes = model.device["noise_modes"] as? [String] else { return noiseOptions }
+        return noiseOptions.filter { modes.contains($0.0) }
+    }
     fileprivate func featureOptions(_ key: String, title: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
             if key == "noise" {
                 Picker("Modo de ruído", selection: Binding(get: { text(model.displaySettings, "noise_mode") }, set: { model.send("device.noise", ["mode": $0]) })) {
-                    if !noiseOptions.contains(where: { $0.0 == text(model.displaySettings, "noise_mode") }) { Text(model.unavailable).tag("").disabled(true) }
-                    ForEach(noiseOptions, id: \.0) { Text($0.1).tag($0.0) }
+                    if !availableNoiseOptions.contains(where: { $0.0 == text(model.displaySettings, "noise_mode") }) { Text(model.unavailable).tag("").disabled(true) }
+                    ForEach(availableNoiseOptions, id: \.0) { Text($0.1).tag($0.0) }
                 }.pickerStyle(.radioGroup).labelsHidden().disabled(!model.canControl)
             } else if key == "equalizer" {
                 Picker("Equalizador", selection: Binding(get: { eqPreset ?? -1 }, set: { model.send("device.equalizer", ["preset": $0]) })) {
                     if eqPreset == nil { Text(eqValue).tag(-1).disabled(true) }
                     ForEach(Array(eqOptions.enumerated()), id: \.offset) { Text($0.element).tag($0.offset) }
                 }.pickerStyle(.radioGroup).labelsHidden().disabled(!model.canControl)
-                Divider()
-                NativeCustomEqualizerEditor(model: model).id(text(model.switching, "selected_buds"))
+                if flag(model.device, "supports_custom_eq") {
+                    Divider()
+                    NativeCustomEqualizerEditor(model: model).id(text(model.switching, "selected_buds"))
+                }
+            } else if key == "levels" {
+                NativeNoiseLevelEditor(model: model)
             } else {
                 if flag(model.displaySettings, "media_controls_mixed") { Text("Gestos de mídia personalizados").font(.caption).foregroundStyle(.secondary) }
                 else if boolean(model.displaySettings, "media_controls_enabled") == nil { Text(model.unavailable).font(.caption).foregroundStyle(.secondary) }
@@ -533,17 +581,20 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
     }
     private var footer: some View {
         HStack(spacing: 10) {
-            Button { model.accountOpen.toggle() } label: {
+            Button {
+                if flag(model.account, "connected") || flag(model.account, "can_cancel") { model.accountOpen.toggle() }
+                else { model.accountOpen = true; model.send("account.sign_in") }
+            } label: {
                 HStack(spacing: 9) {
                     avatar
                     VStack(alignment: .leading, spacing: 2) {
                         Text(text(model.account, "name", "Samsung Account")).font(.system(size: 12, weight: .medium))
                             .underline(accountFocused, color: .secondary).lineLimit(1)
-                        Text(flag(model.account, "connected") ? "Conta conectada" : "Entrar na conta").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(flag(model.account, "connected") ? "Conta conectada" : "Entrar com Samsung Account").font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
             }.buttonStyle(.plain).focused($accountFocused).focusEffectDisabled()
-                .accessibilityLabel("Samsung Account, mostrar ou ocultar detalhes")
+                .accessibilityLabel(flag(model.account, "connected") ? "Samsung Account, mostrar ou ocultar detalhes" : "Entrar com Samsung Account")
             Spacer(minLength: 4)
             Button { model.send("device.refresh") } label: { Image(systemName: "arrow.clockwise").frame(width: 22, height: 24) }
                 .buttonStyle(.borderless).disabled(!model.canRefresh).help("Ler controles dos Buds").accessibilityLabel("Atualizar controles dos Buds")
@@ -593,9 +644,8 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             }
             Divider()
             if flag(model.switching, "recovery_pending") {
-                Text("O som do Mac precisa ser recuperado.").font(.system(size: 12, weight: .medium))
-                Button("Restaurar som do Mac") { model.send("switch.stop") }
-                    .disabled(flag(model.switching, "busy") || flag(model.switching, "settling"))
+                Label("Restaurando o som do Mac automaticamente…", systemImage: "speaker.wave.2")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Button("Sair do Buds") { model.send("app.quit") }
         }.font(.system(size: 12))
@@ -676,19 +726,91 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
         VStack(alignment: .leading, spacing: 12) {
             Divider()
             Text("Samsung Account").font(.system(size: 16, weight: .semibold))
-            Text(text(model.account, "status", "Entre para conectar sua conta.")).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
+            if flag(model.account, "can_cancel") {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(text(model.account, "display_status", "Conectando sua conta…")).foregroundStyle(.secondary)
+                }
+                Button("Cancelar") { model.send("account.cancel") }
+            } else if !flag(model.account, "connected") {
+                Text("Entre para usar a alternância entre seus dispositivos Galaxy.")
+                    .foregroundStyle(.secondary)
+                Button("Entrar com Samsung Account") { model.send("account.sign_in") }
+                    .disabled(!flag(model.account, "can_sign_in") || model.readFailed)
+            } else {
+                Label("Conta conectada", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+                if boolean(model.account, "setup_ready") == false {
+                    Text(text(model.account, "display_status", "Concluindo a configuração da conta…")).foregroundStyle(.secondary)
+                    Button("Concluir conexão") { model.send("account.sign_in") }
+                        .disabled(!flag(model.account, "can_sign_in") || model.readFailed)
+                }
+            }
+            if !text(model.account, "display_error").isEmpty {
+                Text(text(model.account, "display_error")).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if flag(model.account, "needs_identity") {
+                Text("A Samsung precisa confirmar o e-mail ou telefone desta conta.").foregroundStyle(.secondary)
                 TextField("E-mail ou telefone da conta", text: $model.identity).textFieldStyle(.roundedBorder).focused($identityFocused)
                     .onSubmit { if flag(model.account, "can_confirm_identity") && !model.readFailed { model.send("account.identity", ["identity": model.identity]) } }
-                Button("Confirmar identidade") { model.send("account.identity", ["identity": model.identity]) }.disabled(!flag(model.account, "can_confirm_identity") || model.readFailed)
+                Button("Continuar") { model.send("account.identity", ["identity": model.identity]) }
+                    .disabled(!flag(model.account, "can_confirm_identity") || model.readFailed)
             }
-            HStack {
-                Button(flag(model.account, "connected") ? "Entrar novamente" : "Entrar na conta") { model.send("account.sign_in") }.disabled(!flag(model.account, "can_sign_in") || model.readFailed)
-                Button("Sincronizar") { model.send("account.sync") }.disabled(!flag(model.account, "can_sync") || model.readFailed)
-                if flag(model.account, "can_cancel") { Button("Cancelar") { model.send("account.cancel") } }
-            }
-            Button("Preparar continuidade") { model.send("account.enroll_continuity") }.disabled(!flag(model.account, "can_prepare_certificate") || model.readFailed)
         }
+    }
+}
+
+@MainActor private struct NativeNoiseLevelEditor: View {
+    @ObservedObject var model: BudsPanelModel
+    var body: some View {
+        let levels = model.displaySettings["levels"] as? [String: Any] ?? [:]
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(["ambient", "anc"], id: \.self) { kind in
+                if let info = levels[kind] as? [String: Any],
+                   let value = number(info, "value"), let maximum = number(info, "maximum"),
+                   maximum >= 1, maximum <= 4 {
+                    NativeNoiseLevelRow(model: model, kind: kind, value: Int(value), maximum: Int(maximum))
+                }
+            }
+            if levels.isEmpty { Text("Os níveis não estão disponíveis na leitura atual.").foregroundStyle(.secondary) }
+        }
+    }
+}
+
+@MainActor private struct NativeNoiseLevelRow: View {
+    @ObservedObject var model: BudsPanelModel
+    let kind: String
+    let value: Int
+    let maximum: Int
+    @State private var draft = 0.0
+    @State private var editing = false
+    private var activeMode: Bool { text(model.displaySettings, "noise_mode") == (kind == "ambient" ? "ambient" : "anc") }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(kind == "ambient" ? "Som ambiente" : "Cancelamento de ruído").fontWeight(.medium)
+            if maximum == 1 {
+                Picker("Intensidade", selection: Binding(get: { value }, set: {
+                    model.send("device.level", ["kind": kind, "value": $0])
+                })) { Text("Baixa").tag(0); Text("Alta").tag(1) }
+                    .pickerStyle(.segmented).labelsHidden()
+            } else {
+                HStack(spacing: 10) {
+                    Slider(value: Binding(get: { editing ? draft : Double(value) }, set: {
+                        draft = $0
+                        // Keyboard and accessibility adjustments do not begin a drag.
+                        if !editing, Int($0) != value { model.send("device.level", ["kind": kind, "value": Int($0)]) }
+                    }),
+                        in: 0...Double(maximum), step: 1, onEditingChanged: { began in
+                            if began { draft = Double(value); editing = true }
+                            else {
+                                editing = false
+                                if Int(draft) != value { model.send("device.level", ["kind": kind, "value": Int(draft)]) }
+                            }
+                        }).accessibilityLabel(kind == "ambient" ? "Intensidade do som ambiente" : "Intensidade do cancelamento de ruído")
+                    Text("\(Int(editing ? draft : Double(value)) + 1)/\(maximum + 1)").monospacedDigit()
+                }
+            }
+            if !activeMode { Text(kind == "ambient" ? "Ative Som ambiente para ajustar." : "Ative ANC para ajustar.").font(.caption).foregroundStyle(.secondary) }
+        }.disabled(!model.canControl || !activeMode)
     }
 }
 
@@ -849,7 +971,7 @@ private struct NativeBudsActionStyle: ViewModifier {
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
         popover.contentViewController = NativePanelController(model: model)
-        resize(height: 480)
+        resize(height: 520)
         // Prepare account/device models without requesting the headset connection.
         model.refresh()
     }

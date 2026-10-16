@@ -91,7 +91,7 @@ import AppKit
     var transportIsSettling: Bool { draining || physicalRelease != nil || (!enabled && (transportDiagnostics["pending_operations"] as? Int ?? 0) > 0) }
     var multipointState: Int { evidence.status.map { Int($0.state.rawValue) } ?? -1 }
     var streamFlags: Int { evidence.status.map { Int($0.streamType.rawValue) } ?? -1 }
-    var recoveryPending: Bool { !enabled && environment.isArmed() }
+    var recoveryPending: Bool { environment.isArmed() && (!enabled || cleanup != nil || audioRecovery != nil) }
 
     private let environment: NativeSwitchEnvironment
     private var playbackStarted = false
@@ -108,6 +108,7 @@ import AppKit
     private var continuityEvidence = NativeSamsungBudsContextEvidence()
     private var monitor: Task<Void, Never>?
     private var cleanup: Task<Void, Never>?
+    private var audioRecovery: Task<Void, Never>?
     private var draining = false
     private var pauseTask: Task<Void, Error>?
     private var switchDeadline: Task<Void, Never>?
@@ -213,7 +214,7 @@ import AppKit
 
     deinit {
         if let termination { NotificationCenter.default.removeObserver(termination) }
-        monitor?.cancel(); switchDeadline?.cancel(); pauseTask?.cancel(); releaseDeadline?.cancel()
+        monitor?.cancel(); audioRecovery?.cancel(); switchDeadline?.cancel(); pauseTask?.cancel(); releaseDeadline?.cancel()
         let environment = environment
         let stopPeer = onPeerLifecycle
         let preserveGuard = preserveGuardOnDeinit
@@ -230,7 +231,7 @@ import AppKit
     func refresh() async {
         guard !enabled, !busy else { return }
         guard !recoveryPending else {
-            status = "Restaure o som do Mac antes de verificar os dispositivos."; return
+            status = "Aguardando a restauração automática do som do Mac."; return
         }
         let token = generation
         do {
@@ -267,9 +268,9 @@ import AppKit
             return
         }
         guard !environment.isArmed() else {
-            let message = "Conclua a restauração do mute desativando novamente antes de iniciar outra sessão."
+            let message = "Aguarde a restauração automática do som antes de iniciar outra sessão."
             if error?.contains(message) != true { error = [error, message].compactMap { $0 }.joined(separator: "\n") }
-            status = "Recupere o som do Mac antes de ativar novamente."; return
+            status = "Aguardando a restauração automática do som do Mac."; return
         }
         guard ready, buds.contains(where: { $0.address == selectedBuds }) else {
             error = "Verifique os Buds selecionados antes de ativar."; return
@@ -560,7 +561,7 @@ import AppKit
             record("unreported_playback_guard_released")
         } catch {
             // Do not fall through to pause/restore cleanup or clear a journal
-            // whose ownership/verification failed. Explicit recovery stays available.
+            // whose ownership/verification failed. Automatic silent recovery remains available.
             throw NativeSwitchSafetyError(message: error.localizedDescription)
         }
     }
@@ -1165,18 +1166,71 @@ import AppKit
         return try !environment.activity().output
     }
 
-    private static func restoreAfterPause(_ environment: NativeSwitchEnvironment) async throws {
+    /// Silence is independent of MediaRemote acknowledgement. Never send a
+    /// command to an unknown/remote client just to discharge an owned mute.
+    private static func restoreAfterPause(_ environment: NativeSwitchEnvironment,
+                                          allowPause: Bool = true,
+                                          valid: () -> Bool = { true }) async throws {
+        guard valid() else { throw CancellationError() }
         if environment.isArmed() {
-            try await environment.pause()
-            let after = await environment.sample()
-            // MediaRemote describes one player. A second application can still
-            // produce sound through the protected output after that player stops.
-            let stopped = try after.isPlaying != true && !environment.activity().output
-            guard stopped else {
-                throw NativeBudsError(message: "Pausa não confirmada. Mute mantido por segurança; pause o Mac e desative novamente para restaurar.")
+            let route = environment.defaultOutput()
+            let before = try environment.activity()
+            var intent = await environment.sample()
+            guard valid() else { throw CancellationError() }
+            var audio = try environment.activity()
+            guard environment.defaultOutput() == route else {
+                throw NativeSwitchSafetyError(message: "A saída mudou durante a recuperação. A escolha atual será respeitada.")
+            }
+            if allowPause, !before.input, !audio.input,
+               intent.isPlaying == true, intent.clientID != nil {
+                try await environment.pause()
+                guard valid() else { throw CancellationError() }
+                intent = await environment.sample()
+                guard valid() else { throw CancellationError() }
+                audio = try environment.activity()
+            }
+            guard !audio.output, !audio.input, intent.isPlaying != true,
+                  environment.defaultOutput() == route else {
+                throw NativeBudsError(message: "Pausa não confirmada. Aguardando silêncio no Mac para restaurar automaticamente.")
             }
         }
+        guard valid() else { throw CancellationError() }
+        // SpeakerGuard alone arbitrates journal ownership and manual unmute.
         try await environment.restore()
+    }
+
+    private func scheduleAudioRecovery(_ token: UInt64) {
+        let sleep = environment.sleep
+        audioRecovery = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await sleep(1) } catch { return }
+                guard self?.generation == token else { return }
+                if await self?.retryAudioRecovery(token) != false { return }
+            }
+        }
+    }
+
+    private func retryAudioRecovery(_ token: UInt64) async -> Bool {
+        guard generation == token else { return true }
+        do {
+            try await Self.restoreAfterPause(environment, allowPause: false,
+                valid: { [weak self] in self?.generation == token && !Task.isCancelled })
+            guard generation == token else { return true }
+            audioRecovery = nil
+            preserveGuardOnDeinit = false
+            environment.stopPlayback(); playbackStarted = false
+            record("audio_restored_automatically")
+            if enabled, selectedBuds == address {
+                status = "Som restaurado. Aguardando uma nova reprodução no Mac."
+                launch(token, delay: recovery.nextDelay())
+            } else {
+                busy = false
+                status = "Alternância desativada. Mute anterior restaurado."
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func show(galaxy: Bool, acquiredFromRemote: Bool = false) {
@@ -1214,9 +1268,11 @@ import AppKit
             return
         }
         guard enabled || environment.isArmed() || environment.isOpen() || monitor != nil else { return }
+        let recovering = audioRecovery; audioRecovery = nil; recovering?.cancel()
         busy = true
         generation &+= 1
         let token = generation
+        let allowRecoveryPause = !evidence.callActive
         bannerRemoteOwnership = false
         ownsMac = false; requesting = false
         controlPrepared = false
@@ -1246,16 +1302,18 @@ import AppKit
         cleanup = Task { [self] in
             var restored = false
             @MainActor func restorationFailed(_ failure: Error) {
-                enabled = false
-                self.error = [self.error, "Restauração pendente: \(failure.localizedDescription)",
-                    "Pause a mídia no Mac e clique em Restaurar som."].compactMap { $0 }.joined(separator: "\n")
-                status = "Alternância desativada; verifique a recuperação do mute."
+                self.error = [self.error, "Restauração pendente: \(failure.localizedDescription)"].compactMap { $0 }.joined(separator: "\n")
+                status = "Aguardando silêncio no Mac para restaurar o som automaticamente."
             }
+            // A passive recovery may itself be awaiting an accepted restore.
+            // Fence it before another restoration attempt or a new session.
+            await recovering?.value
             do {
                 if preserveGuard {
-                    throw NativeSwitchSafetyError(message: "Proteção mantida; verifique a saída e use Restaurar som.")
+                    throw NativeSwitchSafetyError(message: "Proteção mantida até ser seguro restaurar automaticamente.")
                 }
-                try await Self.restoreAfterPause(environment)
+                try await Self.restoreAfterPause(environment, allowPause: allowRecoveryPause,
+                    valid: { [weak self] in self?.generation == token && self?.selectedBuds == self?.address })
                 restored = true
                 status = "Som restaurado. Aguardando a tentativa anterior terminar…"
                 record("audio_restored_before_drain")
@@ -1274,14 +1332,14 @@ import AppKit
             // A previously accepted arm may also finish late. Never leave its
             // journal/mute behind or start another session on top of it.
             if restored, environment.isArmed() {
-                do { try await Self.restoreAfterPause(environment) }
+                do { try await Self.restoreAfterPause(environment, allowPause: false) }
                 catch { restored = false; restorationFailed(error) }
             }
             draining = false
             record("controller_work_drained")
             if restored {
                 environment.stopPlayback(); playbackStarted = false
-                if enabled, generation == token {
+                if enabled, generation == token, selectedBuds == address {
                     let delay = recovery.nextDelay()
                     status = "Som restaurado. Reconectando o canal Samsung em \(Int(delay)) s…"
                     cleanup = nil
@@ -1291,6 +1349,7 @@ import AppKit
                 status = "Alternância desativada. Mute anterior restaurado."
             }
             busy = false; cleanup = nil
+            if !restored, environment.isArmed() { scheduleAudioRecovery(generation) }
         }
     }
 }

@@ -422,14 +422,14 @@ final class NativePhysicalReleaseTests: XCTestCase {
         await h.stop(model)
     }
 
-    @MainActor func testFailureToPauseDuringReleaseTimeoutRetainsRecoverableGuard() async {
+    @MainActor func testIdleReleaseTimeoutRestoresWithoutRequiringAnUnnecessaryPauseACK() async {
         let (h, model) = await cold()
         await h.acquire(model)
         h.holdClose = true; h.notify(.background); await h.settle()
         h.pauseError = "pause-not-confirmed"
         await h.advance(12)
-        XCTAssertFalse(model.enabled); XCTAssertTrue(model.recoveryPending)
-        XCTAssertTrue(h.armed); XCTAssertEqual(h.restores, 0)
+        XCTAssertTrue(model.enabled); XCTAssertFalse(model.recoveryPending)
+        XCTAssertFalse(h.armed); XCTAssertEqual(h.restores, 1)
         h.holdClose = false; h.closeGate?.resume(); h.closeGate = nil
         await h.settle()
         h.pauseError = nil; await h.stop(model)

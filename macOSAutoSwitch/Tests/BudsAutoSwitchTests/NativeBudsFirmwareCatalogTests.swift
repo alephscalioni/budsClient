@@ -29,4 +29,20 @@ import XCTest
         catalogue.select(address: "fixture", model: "Unverified", installed: "R630XXU0AZG2")
         XCTAssertEqual(catalogue.snapshot["available"] as? Bool, false)
     }
+
+    func testEveryKnownModelHasItsOwnReadOnlyCatalogueIncludingThirteenCharacterFEVersion() throws {
+        for profile in SamsungBudsModelProfile.allCases {
+            let version = profile.firmwarePrefix + "XXU0AZG2"
+            let catalogue = NativeBudsFirmwareCatalog(load: { _ in Data("[]".utf8) })
+            catalogue.select(address: "fixture", model: profile.rawValue, installed: version)
+            XCTAssertEqual(catalogue.snapshot["available"] as? Bool, true, profile.rawValue)
+            XCTAssertEqual(catalogue.snapshot["installed_version"] as? String, version)
+            let response = SamsungBudsSettingsPacket.Frame(command: 0xB4, payload: Data(version.utf8), isFragment: false)
+            XCTAssertEqual(SamsungBudsFirmwareVersion.version(response, model: profile.rawValue), profile.supportsInfo ? version : nil)
+        }
+        XCTAssertEqual(NativeBudsFirmwareCatalog.validVersion("R400NXXU0AZG2", model: .budsFe), "R400NXXU0AZG2")
+        XCTAssertNil(NativeBudsFirmwareCatalog.validVersion("R400XXU0AZG2", model: .budsFe))
+        XCTAssertTrue(try XCTUnwrap(NativeBudsFirmwareCatalog.newer("R400NXXU0AZG2", than: "R400NXXU0AZD2")))
+        XCTAssertNil(NativeBudsFirmwareCatalog.newer("R400NXXU0AZG2", than: "R400NKSU0AZD2"))
+    }
 }

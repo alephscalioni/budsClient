@@ -85,17 +85,19 @@ enum SamsungBudsCustomEqualizer {
 
 /// VERSION READ only. SoftwareVersionOtaDecoder consumes the complete ASCII
 /// payload of FOTA_DEVICE_INFO_SW_VERSION (0xB4), not a NUL-terminated string.
-/// FirmwareRemoteBinary expects 12-character build identities. The native path
-/// accepts only an exact uppercase R630 identity; no FOTA session/write is used.
+/// Accepts an exact model prefix and eight uppercase build characters. Buds FE
+/// has a five-character prefix; no FOTA session/write is used.
 enum SamsungBudsFirmwareVersion {
     typealias Packet = SamsungBudsSettingsPacket
     static let command: UInt8 = 0xB4
     static var request: Data { Packet.frame(command: command, payload: []) }
 
-    static func version(_ frame: Packet.Frame) -> String? {
-        guard !frame.isFragment, frame.command == command, frame.payload.count == 12 else { return nil }
+    static func version(_ frame: Packet.Frame, model: String = "Buds3Pro") -> String? {
+        guard !frame.isFragment, frame.command == command,
+              let profile = SamsungBudsModelProfile(rawValue: model), profile.supportsInfo else { return nil }
         let bytes = [UInt8](frame.payload)
-        guard bytes.starts(with: Array("R630".utf8)), bytes.dropFirst(4).allSatisfy({
+        let prefix = Array(profile.firmwarePrefix.utf8)
+        guard bytes.count == prefix.count + 8, bytes.starts(with: prefix), bytes.dropFirst(prefix.count).allSatisfy({
             (48...57).contains($0) || (65...90).contains($0)
         }) else { return nil }
         return String(bytes: bytes, encoding: .ascii)

@@ -408,7 +408,7 @@ final class NativeControllerRecoveryTests: XCTestCase {
             else { h.otherOutput = true }
             await h.advance(12)
             XCTAssertTrue(h.armed); XCTAssertEqual(h.restores, 0)
-            XCTAssertFalse(model.enabled); XCTAssertTrue(model.recoveryPending)
+            XCTAssertTrue(model.enabled); XCTAssertTrue(model.recoveryPending)
             XCTAssertTrue(model.transportIsSettling)
             await h.advance(60); XCTAssertEqual(h.opens, 1)
             h.holdNoncooperativeOpen = false; h.openGate?.resume(); h.openGate = nil
@@ -606,7 +606,7 @@ final class NativeControllerRecoveryTests: XCTestCase {
 
     @MainActor func testRecoveryRejectsStartAndRefreshWithoutErasingPrimaryFailure() async {
         let h = NativeControllerHarness(); let model = await h.start()
-        h.pauseError = "pause-recovery"; h.loseChannel(); await h.settle()
+        h.play(); h.pauseError = "pause-recovery"; h.loseChannel(); await h.settle()
         XCTAssertTrue(model.recoveryPending)
         model.start(transportGranted: true)
         await model.refresh()
@@ -697,7 +697,7 @@ final class NativeControllerRecoveryTests: XCTestCase {
 
     @MainActor func testStopWhileRecoveryPauseIsSuspendedCannotRestart() async {
         let h = NativeControllerHarness(); let model = await h.start()
-        h.holdPause = true; h.loseChannel(); await h.settle()
+        h.play(); h.holdPause = true; h.loseChannel(); await h.settle()
         XCTAssertTrue(h.armed); XCTAssertTrue(model.enabled); XCTAssertTrue(model.busy)
         model.stop()
         h.holdPause = false; h.pauseGate?.resume(); h.pauseGate = nil
@@ -706,13 +706,13 @@ final class NativeControllerRecoveryTests: XCTestCase {
         XCTAssertFalse(h.armed)
     }
 
-    @MainActor func testPrimaryAndPauseRecoveryErrorsHaltWithVisibleAction() async {
+    @MainActor func testPrimaryAndPauseRecoveryErrorsWaitForAutomaticRecovery() async {
         let h = NativeControllerHarness(); let model = await h.start()
-        h.pauseError = "pause-recovery"; h.loseChannel(); await h.settle()
-        XCTAssertFalse(model.enabled); XCTAssertFalse(model.busy); XCTAssertTrue(model.recoveryPending)
+        h.play(); h.pauseError = "pause-recovery"; h.loseChannel(); await h.settle()
+        XCTAssertTrue(model.enabled); XCTAssertFalse(model.busy); XCTAssertTrue(model.recoveryPending)
         XCTAssertTrue(model.error?.contains("channel-primary") == true)
         XCTAssertTrue(model.error?.contains("pause-recovery") == true)
-        XCTAssertTrue(model.error?.contains("Restaurar som") == true)
+        XCTAssertFalse(model.error?.contains("Restaurar som") == true)
         await h.advance(100); XCTAssertEqual(h.opens, 1)
         h.pauseError = nil; await h.stop(model)
         XCTAssertFalse(model.recoveryPending); XCTAssertTrue(model.ready)
@@ -721,7 +721,7 @@ final class NativeControllerRecoveryTests: XCTestCase {
     @MainActor func testPrimaryAndRestoreErrorsAreBothPreserved() async {
         let h = NativeControllerHarness(); h.openFailures = 1; h.restoreError = "restore-recovery"
         let model = await h.start()
-        XCTAssertFalse(model.enabled); XCTAssertTrue(model.recoveryPending)
+        XCTAssertTrue(model.enabled); XCTAssertTrue(model.recoveryPending)
         XCTAssertTrue(model.error?.contains("opening-primary") == true)
         XCTAssertTrue(model.error?.contains("restore-recovery") == true)
         await h.advance(100); XCTAssertEqual(h.opens, 1)

@@ -6,9 +6,13 @@ Aplicativo independente para Galaxy Buds na barra de menus do macOS.
 
 Reúne Samsung Account, alternância automática, bateria, controles dos fones e
 atualização automática do app em um painel nativo. Os controles disponíveis
-dependem do modelo e de uma conexão confirmada com o fone. A integração foi
-testada fisicamente com Buds3 Pro; Buds4 e outros modelos ainda precisam de
-validação. A consulta de firmware está disponível; a instalação de firmware
+dependem do modelo e de uma conexão confirmada com o fone. Há perfis para os
+13 modelos: Buds, Buds+, Buds Live, Buds Pro, Buds2, Buds2 Pro, Buds FE,
+Buds Core, Buds3, Buds3 Pro, Buds3 FE, Buds4 e Buds4 Pro. Os níveis de som
+ambiente e ANC seguem os recursos de cada modelo. Os comandos dos Buds3 Pro
+e Buds4 também foram conferidos nos respectivos apps oficiais da Samsung.
+A integração foi testada fisicamente com Buds3 Pro; os outros modelos ainda
+precisam de validação física. A consulta de firmware está disponível; a instalação de firmware
 continua pelo Galaxy Wearable.
 
 O ZIP da release contém `Buds.app`. Esta primeira versão pública usa uma

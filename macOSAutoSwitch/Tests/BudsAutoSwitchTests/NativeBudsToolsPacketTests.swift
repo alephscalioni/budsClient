@@ -4,12 +4,12 @@ import XCTest
 final class NativeBudsToolsPacketTests: XCTestCase {
     typealias P = SamsungBudsSettingsPacket
     private func f(_ command: UInt8, _ payload: [UInt8] = []) -> P.Frame { .init(command: command, payload: Data(payload), isFragment: false) }
-    func testClosedToolWhitelistAndHelperWireNeverAdmitFirmwareResetOrAlternateStart() {
-        for frame in [f(0x9D, [0]), f(0x9D, [1]), f(0xA6), f(0xA1), f(0xA2, [0, 1]), f(0xA2, [1, 0])] {
+    func testClosedToolWhitelistAllowsLegacyFindButNeverFirmwareOrReset() {
+        for frame in [f(0x9D, [0]), f(0x9D, [1]), f(0xA0), f(0xA6), f(0xA1), f(0xA2, [0, 1]), f(0xA2, [1, 0])] {
             XCTAssertTrue(NativeBudsToolsPacket.permits(frame))
             XCTAssertTrue(NativeBudsSettingsWire.permittedWrite(P.frame(command: frame.command, payload: Array(frame.payload))))
         }
-        for frame in [f(0xA0), f(0xA6, [0]), f(0xA1, [0]), f(0x9D), f(0x9D, [2]), f(0xA2, [2, 1]), f(0xA2, [0]), f(0xA3, [0, 0]), f(0x9E, [1, 1]), f(0x50), f(0xAF, [0])] {
+        for frame in [f(0xA6, [0]), f(0xA1, [0]), f(0x9D), f(0x9D, [2]), f(0xA2, [2, 1]), f(0xA2, [0]), f(0xA3, [0, 0]), f(0x9E, [1, 1]), f(0x50), f(0xAF, [0])] {
             XCTAssertFalse(NativeBudsToolsPacket.permits(frame))
             XCTAssertFalse(NativeBudsSettingsWire.permittedWrite(P.frame(command: frame.command, payload: Array(frame.payload))))
         }
@@ -49,7 +49,7 @@ final class NativeBudsToolsPacketTests: XCTestCase {
         var guardState = NativeBudsToolsWatchdog()
         guardState.submitted(f(0xA6), at: 10)
         XCTAssertNil(guardState.due(at: 189.9))
-        XCTAssertEqual(guardState.due(at: 190).flatMap(P.decodeCompleteFrame)?.command, 0xA1)
+        XCTAssertEqual(guardState.due(at: 190).flatMap { P.decodeCompleteFrame($0) }?.command, 0xA1)
         XCTAssertNil(guardState.due(at: 200)); XCTAssertNil(guardState.requestStop())
         XCTAssertNotNil(guardState.cleanup, "Closing retries stop even after a watchdog request")
         guardState.observed(f(0x42, [0xA1])); XCTAssertNotNil(guardState.cleanup)
@@ -60,7 +60,7 @@ final class NativeBudsToolsPacketTests: XCTestCase {
     func testHelperWatchdogFitDeadlineDoesNotClaimFirmwareAcousticStop() {
         var guardState = NativeBudsToolsWatchdog(); guardState.submitted(f(0x9D, [1]), at: 10)
         XCTAssertNil(guardState.due(at: 17.9))
-        let stop = guardState.due(at: 18).flatMap(P.decodeCompleteFrame)
+        let stop = guardState.due(at: 18).flatMap { P.decodeCompleteFrame($0) }
         XCTAssertEqual(stop?.command, 0x9D); XCTAssertEqual(stop?.payload, Data([0]))
         XCTAssertNotNil(guardState.cleanup)
         guardState.observed(f(0x9E, [1, 1])); XCTAssertNotNil(guardState.cleanup)

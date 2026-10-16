@@ -292,7 +292,7 @@ final class NativeBudsSettingsConnectionTests: XCTestCase {
         model.select(address: "AABBCCDDEEFF", name: "Buds3 Pro de Aleph", model: nil, blocked: false)
         model.perform(.mediaControls(false)); await h.until { h.packets.count == 1 || model.error != nil }
         XCTAssertNil(model.error)
-        let packet = try XCTUnwrap(h.packets.first.flatMap(Packet.decodeCompleteFrame))
+        let packet = try XCTUnwrap(h.packets.first.flatMap { Packet.decodeCompleteFrame($0) })
         let expected: [UInt8] = [1, 0, 0, 0, 1, 0, 1, 0, 2, 3]
         XCTAssertEqual(packet.payload, Data(expected))
         h.callbacks.last?.written(h.writeID)

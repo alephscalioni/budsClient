@@ -21,6 +21,15 @@ struct NativeBudsSettingsEvidence {
     private(set) var generation = UUID()
     private(set) var observation: Observation?
     private var write: Write?
+    var expectedModel: String?
+    private var profile: SamsungBudsModelProfile? {
+        expectedModel.flatMap(SamsungBudsModelProfile.init(rawValue:))
+            ?? observation.flatMap { SamsungBudsModelProfile.identify($0.frame) }
+    }
+    private func status(_ frame: Packet.Frame) -> Packet.Status? {
+        guard let model = profile?.rawValue ?? SamsungBudsModelProfile.identify(frame)?.rawValue else { return nil }
+        return Packet.status(frame, model: model)
+    }
 
     mutating func reset() {
         generation = UUID(); observation = nil; write = nil
@@ -30,13 +39,14 @@ struct NativeBudsSettingsEvidence {
         // Use the ACK validator as the closed command/payload whitelist.
         let ack = Packet.Frame(command: 0x42, payload: Data([frame.command]) + frame.payload, isFragment: false)
         guard !frame.isFragment, write == nil,
-              observation.map({ Packet.physicalBuds3Pro($0.frame) == true }) == true,
-              (Packet.acknowledges(ack, command: frame.command, payload: Array(frame.payload))
+              observation.flatMap({ status($0.frame) })?.physicalModelVerified == true,
+              profile?.allows(command: frame.command, payload: Array(frame.payload), status: observation.flatMap { status($0.frame) }) == true,
+              (Packet.acknowledges(ack, command: frame.command, payload: Array(frame.payload), profile: profile)
                || (frame.command == SamsungBudsCustomEqualizer.selectionCommand
                    && frame.payload == Data([SamsungBudsCustomEqualizer.customSelection])
                    && SamsungBudsCustomEqualizer.acknowledgesSelection(ack))) else { return false }
         if frame.command == 0x90 {
-            guard let observed = observation.flatMap({ Packet.status($0.frame, model: "Buds3Pro") }),
+            guard let observed = observation.flatMap({ status($0.frame) }),
                   let touch = observed.touchControls else { return false }
             let parameters = Array(frame.payload)
             guard touch.payload(enabled: parameters[0] == 1) == parameters
@@ -44,7 +54,7 @@ struct NativeBudsSettingsEvidence {
                 || touch.admitsIndividualUpdate(parameters) else { return false }
         }
         if let setting = Packet.Setting.forCommand(frame.command) {
-            guard observation.flatMap({ Packet.status($0.frame, model: "Buds3Pro") })?.settings[setting] != nil else { return false }
+            guard observation.flatMap({ status($0.frame) })?.settings[setting] != nil else { return false }
         }
         write = Write(owner: owner, command: frame.command, payload: Array(frame.payload))
         return true
@@ -61,7 +71,8 @@ struct NativeBudsSettingsEvidence {
     mutating func receive(_ frame: Packet.Frame, at now: TimeInterval, date: Date, generation: UUID, owner: UUID?) {
         guard self.generation == generation, !frame.isFragment else { return }
         if frame.command == 0x61 {
-            guard Packet.status(frame, model: "Buds3Pro") != nil else {
+            if expectedModel == nil { expectedModel = SamsungBudsModelProfile.identify(frame)?.rawValue }
+            guard status(frame) != nil else {
                 observation = nil; write = nil; return
             }
             observation = Observation(frame: frame, monotonic: now, date: date)
@@ -69,7 +80,7 @@ struct NativeBudsSettingsEvidence {
             mutate { $0[12] = noise.rawValue }
             if write?.command == 0x78 { write?.noiseFeedback = noise }
         } else if let pending = write, pending.owner == owner,
-                  (Packet.acknowledges(frame, command: pending.command, payload: pending.payload)
+                  (Packet.acknowledges(frame, command: pending.command, payload: pending.payload, profile: profile)
                    || (pending.command == SamsungBudsCustomEqualizer.selectionCommand
                        && pending.payload == [SamsungBudsCustomEqualizer.customSelection]
                        && SamsungBudsCustomEqualizer.acknowledgesSelection(frame))) {
@@ -81,25 +92,38 @@ struct NativeBudsSettingsEvidence {
         guard var observed = observation else { return }
         var bytes = Array(observed.frame.payload)
         update(&bytes)
-        observed.frame = Packet.Frame(command: 0x61, payload: Data(bytes), isFragment: false)
+        observed.frame = Packet.Frame(command: 0x61, payload: Data(bytes), isFragment: false, legacyFraming: observed.frame.legacyFraming)
         observation = observed
     }
     private mutating func mergeIfVerified() {
         guard let pending = write, pending.id != nil, pending.completed, pending.acknowledged,
               pending.noiseFeedback.map({ pending.command != 0x78 || pending.payload == [$0.rawValue] }) ?? true else { return }
+        let currentProfile = profile
         switch pending.command {
+        case 0x83, 0x84:
+            if let level = Packet.Level.forCommand(pending.command), let model = currentProfile?.rawValue,
+               let offset = level.offset(model: model) { mutate { $0[offset] = pending.payload[0] } }
         case 0x78: mutate { $0[12] = pending.payload[0] }
-        case 0x86: mutate { $0[9] = pending.payload[0] }
+        case 0x80: mutate { $0[currentProfile == .buds ? 7 : 8] = pending.payload[0] }
+        case 0x98: mutate { $0[12] = pending.payload[0] }
+        case 0x86:
+            if currentProfile == .buds { mutate { $0[10] = pending.payload[0]; $0[11] = pending.payload[1] - 5 } }
+            else { mutate { $0[currentProfile == .budsPlus ? 11 : 9] = pending.payload[0] } }
         case 0x90: mutate { bytes in
             // Every admitted operation preserves unrelated fields. Reconstruct
             // the exact echoed flags without renewing the observation date.
             let masks: [UInt8] = [0x80, 0x08, 0x04, 0x02, 0x01, 0x10, 0x20, 0x40]
-            bytes[10] = zip(pending.payload.prefix(8), masks).reduce(UInt8(0)) { $0 | ($1.0 == 1 ? $1.1 : 0) }
+            let fields = Array(pending.payload.prefix(min(8, pending.payload.count)))
+            let affected = masks.prefix(fields.count).reduce(UInt8(0), |)
+            bytes[10] = (bytes[10] & ~affected) | zip(fields, masks).reduce(UInt8(0)) { $0 | ($1.0 == 1 ? $1.1 : 0) }
         }
         default:
             if let setting = Packet.Setting.forCommand(pending.command),
-               let current = observation, Packet.status(current.frame, model: "Buds3Pro")?.settings[setting] != nil {
-                mutate { $0[setting.statusOffset] = pending.payload[0] }
+               let current = observation, status(current.frame)?.settings[setting] != nil {
+                if let observed = status(current.frame),
+                   let offset = setting.observation(model: observed.model, revision: observed.revision) {
+                    mutate { $0[offset] = pending.payload[0] }
+                }
             }
         }
         write = nil
@@ -117,6 +141,7 @@ struct NativeBudsSettingsEvidence {
     var now: () -> TimeInterval = { NativeSwitchEvidence.now }
     var date: () -> Date = { Date() }
     var diagnostics: () -> [String: Any] = { [:] }
+    var configureModel: (String?) -> Void = { _ in }
 
     static func live() -> Self {
         let transport = NativeBudsSettingsProcess()
@@ -125,7 +150,7 @@ struct NativeBudsSettingsEvidence {
             send: { try transport.sendTracked($0) }, close: { transport.close() },
             now: { transport.observationStamp?.0 ?? NativeSwitchEvidence.now },
             date: { transport.observationStamp?.1 ?? Date() },
-            diagnostics: { transport.diagnostics })
+            diagnostics: { transport.diagnostics }, configureModel: { transport.configureModel($0) })
     }
 }
 
@@ -135,6 +160,16 @@ struct NativeBudsSettingsEvidence {
     private let effects: NativeBudsSettingsConnectionEffects
     private var address: String?
     private var evidence = NativeBudsSettingsEvidence()
+    private var expectedModel: String?
+    func configureModel(_ model: String?) {
+        guard model != expectedModel else { return }
+        reset(); expectedModel = model; evidence.expectedModel = model
+        effects.configureModel(model)
+    }
+    private func physicalModel(_ frame: SamsungBudsSettingsPacket.Frame) -> Bool? {
+        guard let model = expectedModel ?? SamsungBudsModelProfile.identify(frame)?.rawValue else { return nil }
+        return SamsungBudsModelProfile.physical(frame, model: model)
+    }
     private var replayDate: (TimeInterval, Date)?
     private var attempted = false
     private var opening: UUID?
@@ -176,7 +211,10 @@ struct NativeBudsSettingsEvidence {
         let generation = evidence.generation
         effects.bind({ [weak self] value in
             guard let self, self.evidence.generation == generation else { return }
-            if SamsungBudsSettingsPacket.physicalBuds3Pro(value) == false {
+            if self.expectedModel == nil, let identified = SamsungBudsModelProfile.identify(value) {
+                self.expectedModel = identified.rawValue; self.evidence.expectedModel = identified.rawValue
+            }
+            if self.physicalModel(value) == false {
                 self.evidence.reset(); self.effects.close()
                 self.failed?(NativeBudsError(message: "O estado físico identifica outro modelo de Buds. Ajustes bloqueados."))
                 return
@@ -208,7 +246,9 @@ struct NativeBudsSettingsEvidence {
         let typedDeviceRequest = (packet.command != SamsungBudsCustomEqualizer.selectionCommand
             && SamsungBudsCustomEqualizer.permits(packet)) || SamsungBudsFirmwareVersion.permits(packet)
         if NativeBudsToolsPacket.permits(packet) || typedDeviceRequest {
-            guard SamsungBudsSettingsPacket.physicalBuds3Pro(observed.frame) == true else {
+            guard let profile = (expectedModel ?? SamsungBudsModelProfile.identify(observed.frame)?.rawValue).flatMap(SamsungBudsModelProfile.init(rawValue:)),
+                  physicalModel(observed.frame) == true,
+                  profile.allows(command: packet.command, payload: Array(packet.payload), status: SamsungBudsSettingsPacket.status(observed.frame, model: profile.rawValue)) else {
                 throw NativeBudsError(message: "Ferramenta indisponível sem modelo físico confirmado.")
             }
             // These operations have typed results/readback in the model, not

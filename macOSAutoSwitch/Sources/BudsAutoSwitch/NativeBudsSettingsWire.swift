@@ -26,7 +26,7 @@ enum NativeBudsSettingsWire {
         guard let command = integer(value["command"], maximum: 255), [0x61, 0x42, 0x77, 0x9E, 0xA1, 0xA3, 0x60, 0x69, 0xB4].contains(command),
               let encoded = value["payload"] as? String, encoded.utf8.count <= 1360,
               let payload = Data(base64Encoded: encoded), payload.count <= 1020 else { return nil }
-        return .init(command: UInt8(command), payload: payload, isFragment: false)
+        return .init(command: UInt8(command), payload: payload, isFragment: false, legacyFraming: value["legacy_framing"] as? Bool ?? false)
     }
     static func permittedWrite(_ data: Data) -> Bool {
         guard let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(data), !frame.isFragment else { return false }
@@ -41,7 +41,7 @@ enum NativeBudsSettingsWire {
         if frame.command == 0x86, payload == [7] { return true }
         return NativeBudsToolsPacket.permits(frame) || SamsungBudsSettingsPacket.acknowledges(
             .init(command: 0x42, payload: Data([frame.command] + payload), isFragment: false),
-            command: frame.command, payload: payload)
+            command: frame.command, payload: payload, profile: frame.command == 0x86 && payload.count == 2 ? .buds : nil)
     }
     struct Lines {
         private var buffer = Data()

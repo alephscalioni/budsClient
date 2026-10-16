@@ -106,8 +106,7 @@ public partial class BudsIntegrationPanel : UserControl
             SwitchError.Text = Text(switching, "error");
             SwitchError.IsVisible = !string.IsNullOrWhiteSpace(SwitchError.Text);
             RecoveryPanel.IsVisible = recoveryPending;
-            Restore.IsEnabled = !busy && !settling;
-            SwitchSummary.Text = recoveryPending ? "Recupere o som do Mac" : settling ? "Concluindo cancelamento…" : starting ? "Preparando conexão…" : enabled && busy ? "Conectando…" : enabled ? (SwitchError.IsVisible ? "Ativada · com aviso" : "Ativada · Bluetooth nativo") : busy ? "Restaurando o som…" : SwitchError.IsVisible ? "Interrompida · verifique a conexão" : switching.ValueKind != JsonValueKind.Object ? "Estado indisponível" : "Desativada";
+            SwitchSummary.Text = recoveryPending ? "Restaurando o som automaticamente…" : settling ? "Concluindo cancelamento…" : starting ? "Preparando conexão…" : enabled && busy ? "Conectando…" : enabled ? (SwitchError.IsVisible ? "Ativada · com aviso" : "Ativada · Bluetooth nativo") : busy ? "Restaurando o som…" : SwitchError.IsVisible ? "Interrompida · verifique a conexão" : switching.ValueKind != JsonValueKind.Object ? "Estado indisponível" : "Desativada";
             if (SwitchError.IsVisible && _lastError != SwitchError.Text) SwitchExpander.IsExpanded = true;
             _lastError = SwitchError.Text ?? "";
             DeviceName.Text = Fallback(Text(switching, "device_name"), "Galaxy Buds");

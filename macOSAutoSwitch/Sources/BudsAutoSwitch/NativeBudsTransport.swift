@@ -47,18 +47,24 @@ struct NativeBudsFrameStream {
 @MainActor final class NativeBudsTransport: NSObject, IOBluetoothRFCOMMChannelDelegate {
     enum Configuration: Equatable {
         case smep, sppNew
+        case settings(SamsungBudsModelProfile)
+        var settingsProfile: SamsungBudsModelProfile? {
+            if case .settings(let profile) = self { return profile }; return nil
+        }
+        var isSettings: Bool { self != .smep }
         var serviceUUID: String {
             switch self {
             case .smep: return "F8620674-A1ED-41AB-A8B9-DE9AD655729D"
             case .sppNew: return SamsungBudsSettingsPacket.serviceUUID
+            case .settings(let profile): return profile.serviceUUID
             }
         }
         var commandOffset: Int { self == .smep ? 4 : 3 }
         func acceptsPacket(_ packet: Data) -> Bool {
             switch self {
             case .smep: return SamsungMdePacket.decodeCompleteFrame(packet) != nil
-            case .sppNew:
-                guard let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(packet) else { return false }
+            case .sppNew, .settings:
+                guard let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(packet, profile: settingsProfile) else { return false }
                 return !frame.isFragment
             }
         }
@@ -118,6 +124,7 @@ struct NativeBudsFrameStream {
 
     init(configuration: Configuration = .smep) {
         self.configuration = configuration
+        settingsStream = SamsungBudsSettingsPacket.Stream(profile: configuration.settingsProfile)
         super.init()
     }
 
@@ -179,7 +186,7 @@ struct NativeBudsFrameStream {
               MacAudio.normalize(paired.addressString ?? "") == MacAudio.normalize(address)
         else { throw NativeBudsError(message: "Os Buds selecionados não estão pareados com o Mac.") }
         let token = generation
-        if configuration == .sppNew {
+        if configuration.isSettings {
             do { try await openSettings(paired, address: address, token: token) }
             catch {
                 if generation == token { close() }
@@ -262,13 +269,18 @@ struct NativeBudsFrameStream {
     /// Only the isolated settings helper opts in. Its own tool watchdog queues
     /// the stop; a local write timeout must not cancel that queued invocation.
     func protectToolCleanupWrites() {
-        guard configuration == .sppNew, isOpen else { return }
+        guard configuration.isSettings, isOpen else { return }
         preservesToolCleanupWrites = true
         writeWatchdog?.cancel(); writeWatchdog = nil
     }
 
-    @discardableResult func sendTracked(_ packet: Data) throws -> UInt {
+    @discardableResult func sendTracked(_ submittedPacket: Data) throws -> UInt {
         guard isOpen, let channel else { throw NativeBudsError(message: "O canal Samsung está fechado.") }
+        let packet: Data
+        if configuration.settingsProfile?.legacyFraming == true,
+           let frame = SamsungBudsSettingsPacket.decodeCompleteFrame(submittedPacket) {
+            packet = SamsungBudsSettingsPacket.frame(command: frame.command, payload: Array(frame.payload), profile: configuration.settingsProfile)
+        } else { packet = submittedPacket }
         let minimum = configuration == .smep ? 8 : 7
         guard packet.count >= minimum, packet.count <= 1027 else { throw NativeBudsError(message: "Pacote Samsung fora do limite seguro.") }
         guard configuration.acceptsPacket(packet) else {
@@ -314,7 +326,7 @@ struct NativeBudsFrameStream {
         receiver = nil; device = nil
         if plan.phase != .failed { plan = NativeBudsOpeningPolicy() }
         stream = NativeBudsFrameStream()
-        settingsStream = SamsungBudsSettingsPacket.Stream()
+        settingsStream = SamsungBudsSettingsPacket.Stream(profile: configuration.settingsProfile)
         continuation?.resume(throwing: CancellationError())
     }
 
@@ -381,7 +393,7 @@ struct NativeBudsFrameStream {
         guard generation == token, opening != nil else { return }
         switch action {
         case .queryService:
-            if configuration == .sppNew { fail(NativeBudsError(message: failure)) }
+            if configuration.isSettings { fail(NativeBudsError(message: failure)) }
             else { queryService(token) }
         case .openChannel(let id): openChannel(id, token: token)
         case .fail: fail(NativeBudsError(message: failure))
@@ -523,7 +535,7 @@ struct NativeBudsFrameStream {
         do {
             for offset in stride(from: 0, to: bytes.count, by: 4096) {
                 let chunk = Data(bytes[offset..<min(offset + 4096, bytes.count)])
-                if configuration == .sppNew {
+                if configuration.isSettings {
                     let frames = try settingsStream.append(chunk, at: NativeSwitchEvidence.now)
                     receivedFragments = settingsStream.fragmentCount
                     for frame in frames {

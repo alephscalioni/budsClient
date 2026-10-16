@@ -436,7 +436,8 @@ final class NativeBudsCustomEqualizerTests: XCTestCase {
             for name in ["BudsPro", "Buds2Pro", "Buds3", "Buds3Fe", "Buds4", "Buds4Pro"] {
                 let h = CustomEQHarness(); let model = Model(environment: h.environment()); h.select(model, modelName: name)
                 model.perform(action)
-                XCTAssertFalse(model.busy); XCTAssertEqual(h.checks, 0); XCTAssertEqual(h.opens, 0)
+                await h.until { !model.busy }
+                XCTAssertNotNil(model.error, "A different physical bootstrap must reject the selected model")
                 XCTAssertTrue(h.packets.isEmpty); model.cancel()
             }
             for physical: Bool? in [false, nil] {

@@ -240,7 +240,7 @@ final class NativeBudsAdditionalSettingsTests: XCTestCase {
         }
     }
 
-    @MainActor func testInvalidDirectValuesAndUnsupportedModelsCannotReachTransport() {
+    @MainActor func testInvalidValuesAndMismatchedPhysicalModelsCannotWrite() async {
         for value in [Int.min, -1, 33, 256, Int.max] {
             let h = AdditionalSettingsHarness(); let model = Model(environment: h.environment()); h.select(model)
             model.perform(.setting(.stereoBalance, value))
@@ -251,7 +251,8 @@ final class NativeBudsAdditionalSettingsTests: XCTestCase {
         for name in ["BudsPro", "Buds2Pro", "Buds3", "Buds3Fe", "Buds4", "Buds4Pro"] {
             let h = AdditionalSettingsHarness(); let model = Model(environment: h.environment()); h.select(model, modelName: name)
             model.perform(.setting(.stereoBalance, 16))
-            XCTAssertFalse(model.busy); XCTAssertEqual(h.checks, 0); XCTAssertEqual(h.opens, 0)
+            await h.until { !model.busy }
+            XCTAssertNotNil(model.error)
             XCTAssertTrue(h.packets.isEmpty)
             XCTAssertNil(Packet.status(h.status, model: name))
             model.cancel()

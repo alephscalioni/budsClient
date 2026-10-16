@@ -10,6 +10,11 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     private let embedded: Bool
     private var avatarBase64: String?
     private var avatarRevision = 0
+    private var busy = false
+    private var setupReady = false
+    private var requiresFreshLogin = false
+    private var displayStatus = "Conecte sua Samsung Account."
+    private var displayError: String?
     private var connected = false
     private var cloudEnrolled = false
     private var certificateDiagnostics = SamsungCloudCertificate.Diagnostics()
@@ -41,6 +46,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     private var pending: SamsungAccountWebProtocol.PendingWebSignIn?
     private var generation = UUID()
     private let defaults = UserDefaults.standard
+    nonisolated private static let credentialQueue = DispatchQueue(label: "buds.account.credentials")
     private let keychainService = "io.github.galaxybudsclient.native-account-research"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -91,7 +97,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         identityPanel.isHidden = true
         let controls = NSStackView(views: [button, cancelButton])
         controls.orientation = .horizontal; controls.spacing = 10
-        let stack = NSStackView(views: [title, profileHeader, explanation, status, identityPanel, controls, cloudButton])
+        let stack = NSStackView(views: [title, profileHeader, explanation, status, identityPanel, controls])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 19
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = window?.contentView ?? NSView()
@@ -105,9 +111,9 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
             window.center(); window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        if CommandLine.arguments.contains("--connect-cloud") { connectCloud() }
-        else if CommandLine.arguments.contains("--read-bluetooth") { readBluetooth() }
-        else if CommandLine.arguments.contains("--inspect-bluetooth-schema") { inspectBluetoothSchema() }
+        if !embedded && CommandLine.arguments.contains("--connect-cloud") { connectCloud() }
+        else if !embedded && CommandLine.arguments.contains("--read-bluetooth") { readBluetooth() }
+        else if !embedded && CommandLine.arguments.contains("--inspect-bluetooth-schema") { inspectBluetoothSchema() }
         else { refreshProfile() }
     }
 
@@ -125,6 +131,8 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         var result: [String: Any] = ["name": profileName?.stringValue ?? "Samsung Account",
          "initials": profileInitials?.stringValue ?? "SA", "avatar_revision": avatarRevision,
          "connected": connected, "cloud_enrolled": cloudEnrolled, "status": status?.stringValue ?? "",
+         "busy": busy, "setup_ready": setupReady, "display_status": displayStatus,
+         "display_error": displayError.map { $0 as Any } ?? NSNull(),
          "owns_window": window != nil,
          "can_sign_in": button?.isEnabled ?? false, "can_cancel": cancelButton?.isEnabled ?? false,
          "can_sync": (cloudButton?.isEnabled ?? false) && connected,
@@ -147,7 +155,8 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     func embeddedAction(_ action: String, identity: String = "") {
         switch action {
         case "sign_in":
-            guard button.isEnabled, NSApp.keyWindow != nil || NSApp.mainWindow != nil else { return }
+            guard !busy, button.isEnabled else { return }
+            guard connected || NSApp.keyWindow != nil || NSApp.mainWindow != nil else { return }
             authenticationWindow = NSApp.keyWindow ?? NSApp.mainWindow
             startSignIn()
         case "cancel": cancelSignIn()
@@ -168,12 +177,14 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         try SamsungCloudProtocol.loadPreparedPeerMaterial(account: try await loadAccount())
     }
 
-    /// Retrieval stays GET-only. Only the explicit enroll_continuity action
-    /// selects new own-identity enrollment; neither path renews account tokens.
+    /// Standalone diagnostic actions; the primary sign_in action owns the full
+    /// setup chain. Existing enrollment remains GET-first and preserves keys.
     private func prepareCertificate(enrollContinuity: Bool = false) {
+        guard !busy else { return }
         cancelSignIn()
         let run = UUID(); generation = run
-        setBusy(true); status.stringValue = "Verificando os certificados do Cloud…"
+        setBusy(true); displayStatus = "Concluindo a conexão…"
+        status.stringValue = "Verificando os certificados do Cloud…"
         work = Task { [self] in
             do {
                 let account = try await loadAccount()
@@ -181,14 +192,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                     ? await SamsungCloudProtocol.enrollContinuity(account: account)
                     : await SamsungCloudProtocol.prepareCertificates(account: account)
                 guard generation == run, !Task.isCancelled else { return }
-                certificateDiagnostics = result.diagnostics
-                certificateBlocker = result.blocker?.rawValue ?? ""
-                certificatePublicValues = result.publicValues
-                writeResult(result.publicValues)
-                status.stringValue = result.humanStatus
-                if result.blocker == nil && result.diagnostics.certificateKeychainReady && result.diagnostics.peerRosterContainsThisDevice {
-                    onContinuityReady?()
-                }
+                applyCertificateResult(result)
             } catch {
                 guard generation == run else { return }
                 certificateBlocker = SamsungCloudCertificate.Failure.missingAccount.rawValue
@@ -213,10 +217,38 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         callbackDiagnostics = [:]
         Task { await identity?.cancel() }
         Task { await old?.cancel() }
-        if status != nil { status.stringValue = "Tentativa cancelada."; setBusy(false) }
+        if status != nil {
+            status.stringValue = "Tentativa cancelada."
+            displayStatus = setupReady ? "Conta conectada." : (connected ? "Conexão pendente." : "Conecte sua Samsung Account.")
+            displayError = nil; setBusy(false)
+        }
     }
 
-    private func setBusy(_ busy: Bool) { button.isEnabled = !busy; cancelButton.isEnabled = busy; cloudButton.isEnabled = !busy }
+    private func setBusy(_ busy: Bool) {
+        self.busy = busy
+        button.isEnabled = !busy; cancelButton.isEnabled = busy; cloudButton.isEnabled = !busy
+        if busy { displayError = nil }
+    }
+
+    private func checkRun(_ run: UUID) throws {
+        try Task.checkCancellation()
+        guard generation == run else { throw CancellationError() }
+    }
+
+    private func applyCertificateResult(_ result: SamsungCloudCertificateEnrollment.Result) {
+        certificateDiagnostics = result.diagnostics
+        certificateBlocker = result.blocker?.rawValue ?? ""
+        certificatePublicValues = result.publicValues
+        if result.blocker == .authRejected || result.httpStatus == 401 { requiresFreshLogin = true }
+        setupReady = SamsungAccountSetupPolicy.isReady(authenticated: connected, registered: cloudEnrolled,
+            certificateReady: result.diagnostics.certificateKeychainReady,
+            rosterConfirmed: result.diagnostics.peerRosterContainsThisDevice, blocked: result.blocker != nil)
+        status.stringValue = result.humanStatus
+        displayStatus = setupReady ? "Conta conectada." : "Conexão pendente."
+        displayError = setupReady ? nil : requiresFreshLogin ? "Sua sessão expirou. Entre novamente com sua Samsung Account." : "Não foi possível concluir a conexão. Tente novamente."
+        writeResult(result.publicValues)
+        if setupReady { onContinuityReady?() }
+    }
 
     private func installationID() -> String {
         if let existing = defaults.string(forKey: "accountResearchInstallationID"),
@@ -227,17 +259,31 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     }
 
     @objc private func startSignIn() {
+        guard !busy else { return }
+        if connected && setupReady { displayStatus = "Conta conectada."; displayError = nil; return }
         cancelSignIn()
         let run = UUID(); generation = run
-        setBusy(true); status.stringValue = "Preparando a autorização com a Samsung…"
+        setBusy(true); displayStatus = connected ? "Concluindo a conexão…" : "Abrindo a Samsung…"
+        status.stringValue = "Preparando a autorização com a Samsung…"
         work = Task { [self] in
             do {
+                if !requiresFreshLogin, let saved = try? await loadAccount() {
+                    try checkRun(run)
+                    connected = true
+                    cloudEnrolled = SamsungCloudProtocol.certificateAccountDiagnostics(saved).cloudIdentityRegistered
+                    await finishAccountSetup(run: run, account: saved, refreshToken: true)
+                    return
+                }
+                try checkRun(run)
+                if connected && !requiresFreshLogin { throw SamsungCloudProtocol.Failure.missingAccount }
+                guard !embedded || authenticationWindow != nil else { throw SamsungAccountWebProtocol.Failure.invalidResponse }
                 let attempt = try SamsungAccountProtocol.Attempt.fresh()
                 let profile = SamsungAccountWebProtocol.DeviceProfile(installationID: installationID(),
                     country: "BR", systemVersion: ProcessInfo.processInfo.operatingSystemVersionString)
                 let client = SamsungAccountWebProtocol.Client.windowsAccount
                 let entry = try await SamsungAccountWebProtocol.discoverEntryPoint(client: client)
                 let servers = try await SamsungAccountProtocol.discoverServers()
+                try checkRun(run)
                 status.stringValue = "Verificando se a Samsung aceita o retorno desta autorização…"
                 try await SamsungAccountWebProtocol.validateRegisteredCallback(client: client, attempt: attempt)
                 try Task.checkCancellation()
@@ -250,8 +296,12 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                         guard let self = self, self.generation == run else { return }
                         self.session = nil
                         guard let url = url, error == nil else {
-                            await pending.cancel(); self.pending = nil
+                            await pending.cancel()
+                            guard self.generation == run else { return }
+                            self.pending = nil
                             self.status.stringValue = "Entrada cancelada ou não concluída no navegador."
+                            self.displayStatus = "Entrada não concluída."
+                            self.displayError = "Tente entrar novamente."
                             self.setBusy(false); return
                         }
                         self.complete(callback: url, pending: pending, profile: profile, run: run)
@@ -261,15 +311,18 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 session.prefersEphemeralWebBrowserSession = true
                 self.session = session
                 status.stringValue = "Entre na janela da Samsung para continuar."
+                displayStatus = "Entre na página da Samsung."
                 guard session.start() else { throw SamsungAccountWebProtocol.Failure.invalidResponse }
             } catch SamsungAccountWebProtocol.Failure.rejected(let statusCode, let reason) {
                 guard generation == run else { return }
                 status.stringValue = "A Samsung recusou preparar a autorização (HTTP \(statusCode)). O navegador não será aberto para repetir o erro."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": "application_validation",
                     "authorization_http_status": statusCode, "authorization_error_code": reason, "authorization_completed": false])
+                displayStatus = "Entrada não concluída."; displayError = "A Samsung não autorizou a conexão. Tente novamente."
                 setBusy(false)
             } catch {
                 guard generation == run else { return }
+                displayStatus = "Entrada não concluída."; displayError = "Não foi possível abrir a Samsung. Tente novamente."
                 status.stringValue = "Não foi possível iniciar a autorização. Tente novamente."
                 setBusy(false)
             }
@@ -295,6 +348,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                     identityContinueButton.isEnabled = true
                     window?.setContentSize(NSSize(width: 540, height: 630))
                     status.stringValue = "Login recebido. Confirme o e-mail ou telefone nesta janela para concluir a autorização."
+                    displayStatus = "Confirme o e-mail ou telefone da conta."
                     setBusy(true); window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(identityField)
                     writeResult(["account_flow": "windows_sso", "authorization_stage": "awaiting_identifier",
                         "callback_username_present": false, "authorization_completed": false])
@@ -302,15 +356,18 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                         do { try await Task.sleep(for: .seconds(120)) } catch { return }
                         guard let self, self.generation == run, self.waitingIdentity != nil else { return }
                         await self.waitingIdentity?.cancel()
+                        guard self.generation == run else { return }
                         self.waitingIdentity = nil; self.waitingProfile = nil
                         self.identityPanel.isHidden = true; self.identityField.stringValue = ""
                         self.window?.setContentSize(NSSize(width: 540, height: 500))
                         self.status.stringValue = "A autorização expirou. Entre novamente para continuar."
+                        self.displayStatus = "Entrada expirada."; self.displayError = "Entre novamente para continuar."
                         self.setBusy(false)
                     }
                 }
             } catch {
                 guard generation == run else { return }
+                displayStatus = "Entrada não concluída."; displayError = "Não foi possível validar a autorização. Tente novamente."
                 status.stringValue = "O retorno do login não pôde ser validado. A sessão anterior foi preservada."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": "callback", "authorization_completed": false])
                 setBusy(false)
@@ -319,7 +376,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     }
 
     @objc private func continueWithIdentity() {
-        guard let waitingIdentity, let profile = waitingProfile else { return }
+        guard identityContinueButton.isEnabled, let waitingIdentity, let profile = waitingProfile else { return }
         let identifier: String
         do { identifier = try SamsungAccountContinuityProtocol.loginIdentifier(identityField.stringValue) }
         catch { status.stringValue = "Digite o mesmo e-mail ou telefone usado na página da Samsung."; return }
@@ -328,7 +385,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         work = Task {
             do {
                 let (code, username) = try await waitingIdentity.consume(identifier: identifier)
-                guard generation == run else { return }
+                try checkRun(run)
                 self.waitingIdentity = nil; waitingProfile = nil; identityExpiry?.cancel(); identityExpiry = nil
                 identityPanel.isHidden = true; identityField.stringValue = ""
                 window?.setContentSize(NSSize(width: 540, height: 500))
@@ -341,7 +398,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 status.stringValue = "A autorização expirou. Entre novamente para continuar."
                 setBusy(false)
             }
-            identityContinueButton.isEnabled = true
+            if generation == run { identityContinueButton.isEnabled = true }
         }
     }
 
@@ -357,7 +414,6 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 let rootSession: [String: Any] = ["root_account_session": root,
                     "auth_host": code.servers.authHost, "api_host": code.servers.apiHost,
                     "installation_id": profile.installationID, "obtained_at": Date().timeIntervalSince1970]
-                try await saveToKeychain(JSONSerialization.data(withJSONObject: rootSession), accountName: "samsung-account-root")
                 stage = "cloud_account_token"
                 status.stringValue = "Obtendo a autorização específica do cliente Cloud…"
                 let account = try await SamsungAccountContinuityProtocol.acquireCloudAccount(userAuth: root,
@@ -368,13 +424,17 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 let payload = try JSONSerialization.data(withJSONObject: account)
                 stage = "storage"
                 try await saveToKeychain(payload)
+                try checkRun(run)
+                connected = true; cloudEnrolled = false; setupReady = false; requiresFreshLogin = false
                 self.pending = nil
-                status.stringValue = "Conta autenticada. Tokens salvos nas Chaves do macOS. A inscrição no Cloud ainda está pendente."
-                button.title = "Entrar novamente"; setBusy(false)
+                try await saveToKeychain(JSONSerialization.data(withJSONObject: rootSession), accountName: "samsung-account-root")
+                try checkRun(run)
+                button.title = "Concluir conexão"
                 recordSuccess()
-                refreshProfile()
+                await finishAccountSetup(run: run, account: account, refreshToken: false)
             } catch SamsungAccountWebProtocol.Failure.rejected(let statusCode, let reason) {
                 guard generation == run else { return }
+                displayStatus = "Entrada não concluída."; displayError = "A Samsung não autorizou a conexão. Tente novamente."
                 let detail = reason.isEmpty ? "" : " · " + reason
                 status.stringValue = "A Samsung recusou a autorização em \(stage) (HTTP \(statusCode)\(detail)). A sessão anterior foi preservada."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": stage, "authorization_http_status": statusCode,
@@ -382,17 +442,20 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 setBusy(false)
             } catch SamsungAccountContinuityProtocol.Failure.missingUsername {
                 guard generation == run else { return }
+                displayStatus = "Entrada não concluída."; displayError = "A Samsung não retornou a identificação da conta."
                 status.stringValue = "O retorno da Samsung não trouxe a identificação necessária para autorizar a continuidade. A sessão anterior foi preservada."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": stage,
                     "callback_username_present": false, "authorization_completed": false])
                 setBusy(false)
             } catch SamsungAccountContinuityProtocol.Failure.consentRequired {
                 guard generation == run else { return }
+                displayStatus = "Autorização pendente."; displayError = "Conclua a autorização solicitada pela Samsung."
                 status.stringValue = "A Samsung exige uma autorização adicional para o Cloud. A sessão anterior foi preservada."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": stage, "additional_consent_required": true])
                 setBusy(false)
             } catch {
                 guard generation == run else { return }
+                displayStatus = "Entrada não concluída."; displayError = "Não foi possível concluir a autorização. Tente novamente."
                 status.stringValue = "A autorização não pôde ser concluída em \(stage). A sessão anterior foi preservada."
                 writeResult(["account_flow": "windows_sso", "authorization_stage": stage, "authorization_completed": false])
                 setBusy(false)
@@ -402,7 +465,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     private func saveToKeychain(_ data: Data, accountName: String = "samsung-account-web") async throws {
         let service = keychainService
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.credentialQueue.async {
                 continuation.resume(with: Result { try Self.writeCredential(data, service: service, accountName: accountName) })
             }
         }
@@ -424,7 +487,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
     private func loadAccount(accountName: String = "samsung-account-web") async throws -> [String: Any] {
         let service = keychainService
         let data: Data = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.credentialQueue.async {
                 continuation.resume(with: Result { try Self.readCredential(service: service, accountName: accountName) })
             }
         }
@@ -443,85 +506,92 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         return data
     }
 
-    @objc private func connectCloud() {
-        cancelSignIn()
-        let run = UUID(); generation = run
-        setBusy(true); status.stringValue = "Verificando a sessão para conectar ao Cloud…"
-        work = Task { [self] in
-            var registered = false
-            var stage = "keychain"
-            var refreshed = false
-            do {
-                var account: [String: Any]
-                if let saved = try? await loadAccount(), saved["client_id"] as? String == SamsungCloudProtocol.appID {
-                    account = saved
-                } else {
-                    stage = "cloud_account_token"
-                    let root = try await loadAccount(accountName: "samsung-account-root")
-                    guard let userAuth = root["root_account_session"] as? [String: Any],
-                          let auth = root["auth_host"] as? String, let api = root["api_host"] as? String,
-                          let installation = root["installation_id"] as? String else { throw SamsungCloudProtocol.Failure.missingAccount }
-                    let servers = try SamsungAccountProtocol.Servers.decode(JSONSerialization.data(withJSONObject: [
-                        "auth_server_url": auth, "api_server_url": api, "idm_server_url": "account.samsung.com"]))
-                    account = try await SamsungAccountContinuityProtocol.acquireCloudAccount(userAuth: userAuth,
-                        servers: servers, installationID: installation)
-                    try Task.checkCancellation()
-                    guard generation == run else { return }
-                    try await saveToKeychain(JSONSerialization.data(withJSONObject: account))
-                }
-                try Task.checkCancellation()
-                guard generation == run else { return }
-                stage = "token_refresh"
-                status.stringValue = "Renovando a sessão Samsung antes de conectar ao Cloud…"
-                account = try await SamsungAccountWebProtocol.refresh(account: account)
-                // A rotated refresh token must be persisted before proceeding.
+    @objc private func connectCloud() { startSignIn() }
+
+    /// One explicit sign_in owns registration and GET-first continuity enrollment.
+    /// Never calls an action entry point or cancels its own task.
+    private func finishAccountSetup(run: UUID, account supplied: [String: Any]? = nil,
+                                    refreshToken: Bool) async {
+        var stage = "keychain"
+        var refreshed = false
+        do {
+            var account: [String: Any]
+            if let supplied { account = supplied } else { account = try await loadAccount() }
+            try checkRun(run)
+            // A ready saved account needs no new login, token rotation or HTTP.
+            if account["cloud_registration"] != nil,
+               (try? SamsungCloudProtocol.loadPreparedPeerMaterial(account: account)) != nil {
+                connected = true; cloudEnrolled = true; setupReady = true
+                displayStatus = "Conta conectada."; displayError = nil
+                status.stringValue = "Sessão e continuidade salvas verificadas."
+                button.title = "Conta conectada"; setBusy(false); onContinuityReady?()
+                return
+            }
+            displayStatus = "Concluindo a conexão…"
+            if account["client_id"] as? String != SamsungCloudProtocol.appID {
+                stage = "cloud_account_token"
+                let root = try await loadAccount(accountName: "samsung-account-root")
+                try checkRun(run)
+                guard let userAuth = root["root_account_session"] as? [String: Any],
+                      let auth = root["auth_host"] as? String, let api = root["api_host"] as? String,
+                      let installation = root["installation_id"] as? String else { throw SamsungCloudProtocol.Failure.missingAccount }
+                let servers = try SamsungAccountProtocol.Servers.decode(JSONSerialization.data(withJSONObject: [
+                    "auth_server_url": auth, "api_server_url": api, "idm_server_url": "account.samsung.com"]))
+                account = try await SamsungAccountContinuityProtocol.acquireCloudAccount(userAuth: userAuth,
+                    servers: servers, installationID: installation)
+                try checkRun(run)
                 try await saveToKeychain(JSONSerialization.data(withJSONObject: account))
+                try checkRun(run)
+            }
+            if refreshToken {
+                stage = "token_refresh"
+                account = try await SamsungAccountWebProtocol.refresh(account: account)
+                try checkRun(run)
+                // Persist rotated tokens before any further network operation.
+                try await saveToKeychain(JSONSerialization.data(withJSONObject: account))
+                try checkRun(run)
                 refreshed = true
-                try Task.checkCancellation()
-                guard generation == run else { return }
+            }
+            if account["cloud_registration"] == nil {
                 guard let identifier = account["installation_id"] as? String else { throw SamsungCloudProtocol.Failure.missingAccount }
                 let profile = SamsungCloudProtocol.Profile(installationID: identifier)
                 stage = "discovery"
                 let directory = try await SamsungCloudProtocol.discover(profile: profile)
-                try Task.checkCancellation()
-                guard generation == run else { return }
-                status.stringValue = "Registrando o Mac no Cloud com o perfil de compatibilidade…"
+                try checkRun(run)
                 stage = "registration"
                 let registration = try await SamsungCloudProtocol.register(account: account, profile: profile, directory: directory)
-                registered = true
-                try Task.checkCancellation()
-                guard generation == run else { return }
+                try checkRun(run)
                 account["cloud_registration"] = try JSONSerialization.jsonObject(with: registration)
                 account["cloud_registered_at"] = Date().timeIntervalSince1970
                 stage = "storage"
                 try await saveToKeychain(JSONSerialization.data(withJSONObject: account))
-                recordSuccess(cloudEnrolled: true)
-                connected = true; cloudEnrolled = true
-                status.stringValue = "Conta conectada. Mac registrado no Samsung Cloud."
-                setBusy(false)
-            } catch SamsungCloudProtocol.Failure.rejected(let code, let reason) {
-                guard generation == run else { return }
-                let detail = reason.isEmpty ? "" : " · " + reason
-                status.stringValue = "O Cloud recusou o pedido (HTTP \(code)\(detail)). O login da conta continua salvo."
-                recordCloudFailure(http: code, code: reason, registered: registered, stage: stage, refreshed: refreshed)
-                setBusy(false)
-            } catch SamsungAccountWebProtocol.Failure.rejected(let code, let reason) {
-                guard generation == run else { return }
-                status.stringValue = "A Samsung recusou renovar a sessão (HTTP \(code)). Entre novamente para continuar."
-                recordCloudFailure(http: code, code: reason, registered: false, stage: stage, refreshed: refreshed)
-                setBusy(false)
-            } catch SamsungCloudProtocol.Failure.missingAccount {
-                guard generation == run else { return }
-                status.stringValue = "A sessão salva não contém a identificação exigida pelo Cloud. Entre novamente para continuar."
-                recordCloudFailure(http: 0, code: "MISSING_ACCOUNT_FIELDS", registered: registered, stage: stage, refreshed: refreshed)
-                setBusy(false)
-            } catch {
-                guard generation == run else { return }
-                status.stringValue = registered ? "Cloud registrado, mas não foi possível salvar sua sessão nas Chaves."
-                    : "Não foi possível concluir o registro no Cloud. O login da conta continua salvo."
-                recordCloudFailure(http: 0, code: "LOCAL_OR_TRANSPORT_FAILURE", registered: registered, stage: stage, refreshed: refreshed)
-                setBusy(false)
+                try checkRun(run)
             }
+            connected = true
+            cloudEnrolled = SamsungCloudProtocol.certificateAccountDiagnostics(account).cloudIdentityRegistered
+            stage = "continuity"
+            let result = await SamsungCloudProtocol.enrollContinuity(account: account)
+            try checkRun(run)
+            applyCertificateResult(result)
+            button.title = setupReady ? "Conta conectada" : "Concluir conexão"
+            setBusy(false)
+            // Profile is optional and fetched only as part of this explicit action.
+            refreshProfile(fetchRemote: true)
+        } catch {
+            guard generation == run, !Task.isCancelled else { return }
+            setupReady = false
+            displayStatus = connected ? "Conexão pendente." : "Entrada não concluída."
+            displayError = "Não foi possível concluir a conexão. Tente novamente."
+            status.stringValue = "Configuração interrompida em \(stage). A sessão salva foi preservada."
+            var http = 0; var code = "LOCAL_OR_TRANSPORT_FAILURE"
+            if case SamsungCloudProtocol.Failure.rejected(let value, let reason) = error { http = value; code = reason }
+            if case SamsungAccountWebProtocol.Failure.rejected(let value, let reason) = error { http = value; code = reason }
+            if http == 401 || (stage == "token_refresh" && http == 400) {
+                requiresFreshLogin = true
+                displayError = "Sua sessão expirou. Entre novamente com sua Samsung Account."
+            }
+            recordCloudFailure(http: http, code: code, registered: cloudEnrolled, stage: stage, refreshed: refreshed)
+            setBusy(false)
         }
     }
 
@@ -574,7 +644,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
         }
     }
 
-    private func refreshProfile() {
+    private func refreshProfile(fetchRemote: Bool = false) {
         let run = generation
         profileWork = Task { [self] in
             defer { if CommandLine.arguments.contains("--profile-only") { NSApp.terminate(nil) } }
@@ -582,13 +652,34 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 let account = try await loadAccount()
                 guard generation == run else { return }
                 connected = true
-                cloudEnrolled = account["cloud_registration"] != nil
-                status.stringValue = "Conta salva neste Mac. Consultando seu perfil…"
-                button.title = "Entrar novamente"
+                cloudEnrolled = SamsungCloudProtocol.certificateAccountDiagnostics(account).cloudIdentityRegistered
+                if !fetchRemote {
+                    // Prefer the saved profile. A pre-cache installation gets
+                    // one optional profile fetch, never enrollment or snapshot polling.
+                    var cachedProfile = false
+                    if let saved = try? await loadAccount(accountName: "samsung-account-profile") {
+                        try checkRun(run); cachedProfile = true
+                        if let name = saved["name"] as? String {
+                            profileName.stringValue = name
+                            profileInitials.stringValue = name.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
+                        }
+                        if let encoded = saved["avatar_base64"] as? String, let data = Data(base64Encoded: encoded), let image = NSImage(data: data) {
+                            profileImage.image = image; profileInitials.isHidden = true
+                            avatarBase64 = encoded; avatarRevision += 1
+                        }
+                    }
+                    setupReady = cloudEnrolled && (try? SamsungCloudProtocol.loadPreparedPeerMaterial(account: account)) != nil
+                    displayStatus = setupReady ? "Conta conectada." : "Conta salva. Conclua a conexão."
+                    status.stringValue = setupReady ? "Sessão e continuidade salvas verificadas." : "Conta salva neste Mac."
+                    button.title = setupReady ? "Conta conectada" : "Concluir conexão"
+                    if !cachedProfile { refreshProfile(fetchRemote: true) }
+                    return
+                }
                 var profile: SamsungAccountProfileProtocol.Profile
                 var photoDiagnostic: [String: Any] = [:]
                 do { profile = try await SamsungAccountProfileProtocol.fetch(account: account) }
                 catch SamsungAccountProfileProtocol.Failure.rejected(406, _) {
+                    try checkRun(run)
                     profile = try await SamsungAccountProfileProtocol.fetchCloudAvatar(account: account)
                 }
                 catch SamsungAccountProfileProtocol.Failure.rejected(403, _) {
@@ -599,11 +690,15 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                           let installation = root["installation_id"] as? String else { throw SamsungCloudProtocol.Failure.missingAccount }
                     let servers = try SamsungAccountProtocol.Servers.decode(JSONSerialization.data(withJSONObject: [
                         "auth_server_url": auth, "api_server_url": api, "idm_server_url": "account.samsung.com"]))
+                    try checkRun(run)
                     let profileAccount = try await SamsungAccountContinuityProtocol.acquireCloudAccount(userAuth: userAuth,
                         servers: servers, installationID: installation, consumer: .profile)
+                    try checkRun(run)
                     try await saveToKeychain(JSONSerialization.data(withJSONObject: profileAccount), accountName: "samsung-account-profile-session")
+                    try checkRun(run)
                     profile = try await SamsungAccountProfileProtocol.fetch(account: profileAccount)
                 }
+                try checkRun(run)
                 if profile.avatar == nil, account["cloud_registration"] != nil {
                     do {
                         let photo = try await SamsungAccountProfileProtocol.fetchCloudAvatar(account: account)
@@ -628,8 +723,7 @@ final class AccountSignInController: NSObject, NSApplicationDelegate, ASWebAuthe
                 privateProfile["avatar_base64"] = profile.avatar?.base64EncodedString()
                 try await saveToKeychain(JSONSerialization.data(withJSONObject: privateProfile), accountName: "samsung-account-profile")
                 writeProfileResult(photoDiagnostic.merging(["profile_loaded": true, "profile_has_name": profile.name != nil, "profile_has_avatar": profile.avatar != nil]) { _, new in new })
-                if account["cloud_registration"] != nil { status.stringValue = "Conta conectada. Mac registrado no Samsung Cloud." }
-                else { status.stringValue = "Conta conectada. Sincronize seus dispositivos para continuar." }
+                // Optional profile/photo availability never changes setup readiness.
             } catch SamsungAccountProfileProtocol.Failure.rejected(let http, let code) {
                 guard generation == run else { return }
                 status.stringValue = "Conta salva. A foto do perfil não está disponível nesta sessão."

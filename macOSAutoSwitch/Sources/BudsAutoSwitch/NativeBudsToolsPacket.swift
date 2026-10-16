@@ -23,7 +23,7 @@ enum NativeBudsToolsPacket {
         guard !frame.isFragment else { return false }
         switch frame.command {
         case 0x9D: return frame.payload.count == 1 && frame.payload[0] <= 1
-        case 0xA6, 0xA1: return frame.payload.isEmpty
+        case 0xA0, 0xA6, 0xA1: return frame.payload.isEmpty
         case 0xA2: return frame.payload.count == 2 && frame.payload.allSatisfy { $0 <= 1 }
         default: return false
         }
@@ -42,7 +42,27 @@ enum NativeBudsToolsPacket {
         return (frame.command == 0x42 && Array(frame.payload) == [0xA2] + parameters)
             || (frame.command == 0xA3 && Array(frame.payload) == parameters)
     }
-    static func placements(_ frame: Packet.Frame) -> (Packet.Placement, Packet.Placement)? {
+    static func placements(_ frame: Packet.Frame, profile: SamsungBudsModelProfile? = nil) -> (Packet.Placement, Packet.Placement)? {
+        if let profile {
+            guard !frame.isFragment else { return nil }
+            if frame.command == 0x61 {
+                return Packet.status(frame, model: profile.rawValue).map { ($0.leftPlacement, $0.rightPlacement) }
+            }
+            guard frame.command == 0x60, frame.payload.count >= (profile == .buds ? 6 : 7) else { return nil }
+            let p = Array(frame.payload), placement = frame.payload[5]
+            if profile == .buds {
+                guard [UInt8(0), 1, 16, 17].contains(placement) else { return nil }
+                return (placement & 16 != 0 ? .wearing : .idle, placement & 1 != 0 ? .wearing : .idle)
+            }
+            guard var left = Packet.Placement(rawValue: placement >> 4),
+                  var right = Packet.Placement(rawValue: placement & 15) else { return nil }
+            if ![.budsPlus, .budsLive, .budsPro].contains(profile) {
+                guard p.count >= 8 else { return nil }
+                if p[7] & 0x10 != 0 { left = .inCase }
+                if p[7] & 0x04 != 0 { right = .inCase }
+            }
+            return (left, right)
+        }
         guard !frame.isFragment, let revision = frame.payload.first else { return nil }
         let offset: Int
         switch frame.command {
@@ -60,7 +80,7 @@ enum NativeBudsToolsPacket {
         if frame.command == 0xA1 || (frame.command == 0x9D && Array(frame.payload) == [0]) { return true }
         guard let placements, let observedAt, now.isFinite, observedAt.isFinite,
               now >= observedAt, now - observedAt <= 5 else { return false }
-        if frame.command == 0xA6 || frame.command == 0xA2 {
+        if (frame.command == 0xA6 || frame.command == 0xA0) || frame.command == 0xA2 {
             return placements.0 == .idle && placements.1 == .idle
         }
         if frame.command == 0x9D && Array(frame.payload) == [1] {
@@ -87,7 +107,7 @@ struct NativeBudsToolsWatchdog {
     }
     mutating func submitted(_ frame: SamsungBudsSettingsPacket.Frame, at now: TimeInterval) {
         guard now.isFinite else { return }
-        if frame.command == 0xA6, frame.payload.isEmpty {
+        if [UInt8(0xA0), 0xA6].contains(frame.command), frame.payload.isEmpty {
             kind = .find; deadline = now + NativeBudsToolsPacket.findDuration; stopIssued = false
         } else if frame.command == 0x9D, Array(frame.payload) == [1] {
             kind = .fit; deadline = now + 8; stopIssued = false

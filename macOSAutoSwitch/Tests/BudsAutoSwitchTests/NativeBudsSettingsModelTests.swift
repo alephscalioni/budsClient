@@ -29,6 +29,7 @@ import XCTest
     var openGate: CheckedContinuation<Void, Never>?
     var checkGate: CheckedContinuation<Void, Never>?
     var onCommandOpen: (() -> Void)?
+    var statusOnEveryOpen = false
     var toolsAllowed = true
     var resets = 0
     private var sleepers: [UUID: (TimeInterval, CheckedContinuation<Void, Error>)] = [:]
@@ -52,7 +53,7 @@ import XCTest
                 if self.openingFailure { throw NativeBudsError(message: "RFCOMM opening failed") }
                 self.isOpen = true
                 // Each transaction uses a read session then one command session.
-                if self.opens.count % 2 == 1, let status = self.statusOnRead { saved?.frame(status) }
+                if self.opens.count % 2 == 1 || self.statusOnEveryOpen, let status = self.statusOnRead { saved?.frame(status) }
                 else { self.onCommandOpen?() }
             }, send: { packet in
                 XCTAssertTrue(self.isOpen)
@@ -523,24 +524,24 @@ final class NativeBudsSettingsModelTests: XCTestCase {
     @MainActor func testCommandRequiresMatchingEchoAndExactWriteCompletionInSeparateSession() async throws {
         let h = SettingsHarness(); let model = Model(environment: h.environment()); h.select(model)
         // An echo delivered while opening is stale/unarmed, even if it matches.
-        h.onCommandOpen = { h.callbacks?.frame(SettingsWireFixture.ack(0x78, [1])) }
-        model.perform(.noise(.anc))
+        h.onCommandOpen = { h.callbacks?.frame(SettingsWireFixture.ack(0x86, [1])) }
+        model.perform(.equalizer(0))
         await h.until { h.packets.count == 1 && h.responseWaiting }
         XCTAssertEqual(h.opens.count, 2); XCTAssertEqual(h.checks.count, 2)
         let frame = try XCTUnwrap(SamsungBudsSettingsPacket.decodeCompleteFrame(h.packets[0]))
-        XCTAssertEqual(frame.command, 0x78); XCTAssertEqual(frame.payload, Data([1]))
+        XCTAssertEqual(frame.command, 0x86); XCTAssertEqual(frame.payload, Data([1]))
         model.perform(.equalizer(0)) // Busy intents must not queue up.
         h.callbacks?.written(h.nextWrite)
         XCTAssertTrue(model.busy, "Echo received before send cannot confirm the command")
-        h.callbacks?.frame(SettingsWireFixture.ack(0x78, [0]))
-        h.callbacks?.frame(SettingsWireFixture.ack(0x86, [1]))
-        h.callbacks?.frame(.init(command: 0x77, payload: Data([1]), isFragment: false))
-        h.sessions[0].frame(SettingsWireFixture.ack(0x78, [1]))
-        XCTAssertTrue(model.busy)
-        XCTAssertEqual(model.snapshot["noise_mode"] as? String, "ambient", "Never optimistically select the requested mode")
+        h.callbacks?.frame(SettingsWireFixture.ack(0x86, [0]))
         h.callbacks?.frame(SettingsWireFixture.ack(0x78, [1]))
+        h.callbacks?.frame(.init(command: 0x77, payload: Data([1]), isFragment: false))
+        h.sessions[0].frame(SettingsWireFixture.ack(0x86, [1]))
+        XCTAssertTrue(model.busy)
+        XCTAssertEqual(model.snapshot["equalizer"] as? Int, 4, "Never optimistically select the requested mode")
+        h.callbacks?.frame(SettingsWireFixture.ack(0x86, [1]))
         await h.until { !model.busy }
-        XCTAssertEqual(model.snapshot["noise_mode"] as? String, "anc")
+        XCTAssertEqual(model.snapshot["equalizer"] as? Int, 0)
         XCTAssertTrue(model.snapshot["error"] is NSNull)
         XCTAssertEqual(h.packets.count, 1); XCTAssertFalse(h.isOpen)
         model.cancel()
@@ -562,7 +563,7 @@ final class NativeBudsSettingsModelTests: XCTestCase {
     }
 
     @MainActor func testRapidNoiseChangesWaitSamsungIntervalAfterConfirmedCompletion() async throws {
-        let h = SettingsHarness(); let model = Model(environment: h.environment()); h.select(model)
+        let h = SettingsHarness(); let model = Model(environment: h.environment()); h.select(model); h.statusOnEveryOpen = true
         model.perform(.noise(.off)); await h.until { h.packets.count == 1 && h.responseWaiting }
         h.callbacks?.written(1); h.callbacks?.frame(SettingsWireFixture.ack(0x78, [0])); await h.until { !model.busy }
         h.advance(0.3)
@@ -570,7 +571,7 @@ final class NativeBudsSettingsModelTests: XCTestCase {
         h.statusOnRead = .init(command: 0x61, payload: off, isFragment: false)
         model.perform(.noise(.anc)); await h.until { h.noiseIntervalWaiting }
         XCTAssertTrue(model.busy); XCTAssertEqual(h.packets.count, 1)
-        XCTAssertEqual(h.opens.count, 2, "The interval must precede the next SDK session, not just its write")
+        XCTAssertEqual(h.opens.count, 1, "The interval must precede the next SDK session, not just its write")
         h.advance(1.19); for _ in 0..<10 { await Task.yield() }
         XCTAssertEqual(h.packets.count, 1)
         h.advance(0.01); await h.until { h.packets.count == 2 && h.responseWaiting }
@@ -634,9 +635,9 @@ final class NativeBudsSettingsModelTests: XCTestCase {
         await h.until { !model.busy }
         XCTAssertTrue(model.error?.contains("divergente") == true)
         XCTAssertTrue(model.snapshot["noise_mode"] is NSNull)
-        XCTAssertEqual(h.opens.count, 2, "No retry loop after an unverified command")
+        XCTAssertEqual(h.opens.count, 1, "No retry loop after an unverified command")
         h.advance(300)
-        XCTAssertEqual(h.opens.count, 2)
+        XCTAssertEqual(h.opens.count, 1)
         model.cancel()
     }
 
@@ -794,10 +795,10 @@ final class NativeBudsSettingsModelTests: XCTestCase {
     }
 
     @MainActor func testOldCommandSessionCannotConfirmNewGenerationWithSameCommand() async {
-        let h = SettingsHarness(); let model = Model(environment: h.environment()); h.select(model)
+        let h = SettingsHarness(); let model = Model(environment: h.environment()); h.select(model); h.statusOnEveryOpen = true
         model.perform(.noise(.anc))
         await h.until { h.packets.count == 1 && h.responseWaiting }
-        let old = h.sessions[1]
+        let old = h.sessions[0]
         model.cancel()
         model.perform(.noise(.anc))
         await h.until { h.packets.count == 2 && h.responseWaiting }
@@ -878,7 +879,7 @@ final class NativeBudsSettingsModelTests: XCTestCase {
     @MainActor func testDisconnectBetweenReadAndWriteDoesNotOpenCommandSession() async {
         let h = SettingsHarness(); h.connections = [true, false]
         let model = Model(environment: h.environment()); h.select(model)
-        model.perform(.noise(.off))
+        model.perform(.equalizer(0))
         await h.until { !model.busy }
         XCTAssertEqual(h.checks.count, 2); XCTAssertEqual(h.opens.count, 1)
         XCTAssertTrue(h.packets.isEmpty); XCTAssertNotNil(model.error)
@@ -920,7 +921,7 @@ final class NativeBudsSettingsModelTests: XCTestCase {
 
     @MainActor func testUnsupportedModelAndBusySwitchBlockAllSettingsEffects() async {
         let h = SettingsHarness(); let model = Model(environment: h.environment())
-        model.select(address: "AA:BB:CC:DD:EE:FF", name: "Galaxy Buds3 Pro", model: "Buds2Pro", blocked: false)
+        model.select(address: "AA:BB:CC:DD:EE:FF", name: "Galaxy Buds3 Pro", model: "UnknownModel", blocked: false)
         XCTAssertEqual(model.snapshot["can_control"] as? Bool, false)
         model.perform(.refresh)
         XCTAssertFalse(model.busy); XCTAssertTrue(h.checks.isEmpty)
