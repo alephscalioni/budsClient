@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
+      - name: Confirm pinned SDK selection
+        run: test "$(dotnet --version)" = 10.0.300
       - name: Export and release validation tests
         run: python3 -m unittest discover -s tests -v
       - name: Swift tests
