@@ -68,7 +68,7 @@ IMAGE_FILES=("$IMAGES"/*.png)
 # dylib silently shipped stale controller code even after managed publish passed.
 bash "$ROOT/macOSAutoSwitch/scripts/build-native-library.sh"
 for input in "$NATIVE" "$BLUETOOTH"; do
-    /usr/bin/lipo -verify_arch arm64 "$input" || fail "No arm64 slice: $input"
+    /usr/bin/lipo "$input" -verify_arch arm64 || fail "No arm64 slice: $input"
 done
 if [[ -e "$APP" || -L "$APP" ]]; then
     [[ ! -L "$APP" && -d "$APP" && -f "$APP/Contents/Resources/.buds-packaging-owned" ]] \
@@ -101,7 +101,7 @@ xcrun swiftc -O -parse-as-library -D BUDS_EMBEDDED \
     -target arm64-apple-macos14.2 -module-cache-path "$WORK/SwiftModuleCache" \
     -framework Foundation -framework AppKit -framework CoreAudio -framework IOBluetooth \
     "${HELPER_SOURCES[@]}" -o "$WORK/BudsGuardHelper"
-/usr/bin/lipo -verify_arch arm64 "$WORK/BudsGuardHelper" \
+/usr/bin/lipo "$WORK/BudsGuardHelper" -verify_arch arm64 \
     || fail 'BudsGuardHelper has no arm64 slice.'
 
 # Record managed inputs before the compiler runs. A concurrent edit cannot make
@@ -291,7 +291,7 @@ def expand(value, owner):
 
 exe_rpaths = rpaths(macos / 'Galaxy Buds Manager')
 for path in binaries:
-    subprocess.run(['/usr/bin/lipo', '-verify_arch', 'arm64', str(path)], check=True)
+    subprocess.run(['/usr/bin/lipo', str(path), '-verify_arch', 'arm64'], check=True)
     ids = {line.strip() for line in output('/usr/bin/otool', '-arch', 'arm64', '-D', str(path)).splitlines()[1:]}
     dependencies = output('/usr/bin/otool', '-arch', 'arm64', '-L', str(path)).splitlines()[1:]
     search = [expand(p, path) for p in rpaths(path)]

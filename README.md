@@ -56,7 +56,7 @@ hash. The generated macOS workspace is `.build/workspace/GalaxyBudsClient`;
 Sparkle 2.10.0 lives at its required sibling path
 `.build/workspace/tools/sparkle-2.10.0`. Both are ignored. The app is `dist/Buds.app`.
 `BUDS_DOTNET` can also point to a local SDK; no .NET binaries are vendored.
-The canonical packager is unchanged except for its output-directory override.
+The packager retains its output-directory override and uses portable architecture checks.
 It retains source-hash, running-app, recovery-journal and bundle-ownership checks.
 
 Packaging signs with the existing identity policy. Set

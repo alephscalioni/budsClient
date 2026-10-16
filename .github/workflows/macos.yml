@@ -35,8 +35,6 @@ jobs:
         run: bash scripts/build-native-interop.sh
       - name: Managed lifecycle tests
         run: dotnet test .build/workspace/GalaxyBudsClient/GalaxyBudsClient.Tests/GalaxyBudsClient.Tests.csproj -c Release -p:UseMacOSSDK=false -p:PackNative=true --filter 'FullyQualifiedName~NativeBuds'
-      - name: Native library
-        run: bash scripts/build-native-library.sh
       - name: Package app with ad-hoc identity
         run: BUDS_DOTNET="$(command -v dotnet)" bash scripts/build-buds-macos.sh
       - name: Archive app
