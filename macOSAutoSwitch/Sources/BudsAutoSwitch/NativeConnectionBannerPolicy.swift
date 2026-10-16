@@ -80,7 +80,7 @@ struct NativeConnectionBannerPolicy {
     }
 
     mutating func presentation(for event: NativeConnectionBannerEvent,
-                               portuguese: Bool = Locale.preferredLanguages.first?.hasPrefix("pt") == true)
+                               language: AppLanguage = .current)
         -> NativeConnectionBannerPresentation? {
         guard let address = Self.normalizedAddress(event.address), event.occurredAt.isFinite,
               event.occurredAt >= 0 else { return nil }
@@ -92,19 +92,17 @@ struct NativeConnectionBannerPolicy {
         let symbol: String
         switch event.kind {
         case .directMacConnection:
-            target = .mac; destination = portuguese ? "Conectado ao Mac" : "Connected to Mac"
+            target = .mac; destination = LocalizedText.connectedToMac.string(language)
             symbol = "laptopcomputer"
         case .acquiredFromOtherDevice:
-            target = .mac; destination = portuguese ? "Conectado ao Mac" : "Connected to Mac"
+            target = .mac; destination = LocalizedText.connectedToMac.string(language)
             symbol = "arrow.down.left.circle"
         case .departedFromMac(let peer):
             target = .other; symbol = "arrow.up.right.circle"
             if let peer, peer.budsAddress == address, peer.transferID == event.id {
-                destination = portuguese ? "Desconectado do Mac · Conectado a \(peer.name)"
-                    : "Disconnected from Mac · Connected to \(peer.name)"
+                destination = LocalizedText.disconnected(to: peer.name, language)
             } else {
-                destination = portuguese ? "Desconectado do Mac · Conectado a outro dispositivo"
-                    : "Disconnected from Mac · Connected to another device"
+                destination = LocalizedText.disconnected(to: LocalizedText.disconnectedToAnother.string(language), language)
             }
         }
         let repeated = state.target == target

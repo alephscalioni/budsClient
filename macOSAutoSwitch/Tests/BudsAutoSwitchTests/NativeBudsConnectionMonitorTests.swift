@@ -25,7 +25,7 @@ final class NativeBudsConnectionMonitorTests: XCTestCase {
         var policy = NativeConnectionBannerPolicy()
         let monitor = NativeBudsConnectionMonitor(observer: fake, now: { 100 }, onEvent: {
             events.append($0)
-            if let result = policy.presentation(for: $0, portuguese: true) { presentations.append(result) }
+            if let result = policy.presentation(for: $0, language: .portuguese) { presentations.append(result) }
         }, onLinkState: { policy.observeLink(address: $0, connected: $1, at: $2) })
         return (fake, monitor, { events }, { presentations })
     }
