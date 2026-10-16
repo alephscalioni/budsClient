@@ -124,7 +124,7 @@ internal static class NativeBudsIntegration
         using var document = ReadState(int.MaxValue);
         var safe = new System.Collections.Generic.Dictionary<string, JsonElement>();
         if (document.RootElement.TryGetProperty("device", out var device))
-            foreach (var key in new[] { "available", "busy", "connected", "can_refresh", "can_control", "can_touch", "model_verified", "observed_at", "read_fresh", "observation_revision", "last_observation", "noise_mode", "equalizer", "equalizer_raw", "equalizer_enabled", "equalizer_custom", "custom_eq_bands", "custom_eq_observed_at", "can_custom_eq_read", "can_custom_eq_write", "firmware_version", "firmware_observed_at", "can_info", "ambient_level", "touch_enabled", "media_controls_enabled", "media_controls_mixed", "touch_controls", "tools", "settings", "status", "error", "transport_diagnostics" })
+            foreach (var key in new[] { "available", "busy", "connected", "can_refresh", "can_control", "can_touch", "model_verified", "observed_at", "read_fresh", "observation_revision", "last_observation", "noise_mode", "noise_modes", "levels", "equalizer", "equalizer_raw", "equalizer_enabled", "equalizer_custom", "custom_eq_bands", "custom_eq_observed_at", "can_custom_eq_read", "can_custom_eq_write", "firmware_version", "firmware_observed_at", "can_info", "ambient_level", "touch_enabled", "media_controls_enabled", "media_controls_mixed", "touch_controls", "tools", "settings", "status", "error", "transport_diagnostics" })
                 if (device.TryGetProperty(key, out var value)) safe[key] = value;
         if (document.RootElement.TryGetProperty("switching", out var switching) && switching.TryGetProperty("battery", out var battery))
             safe["battery"] = battery;

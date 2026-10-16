@@ -85,7 +85,7 @@ private typealias PanelAction = @convention(c) (UnsafePointer<CChar>?) -> Void
             deviceState: hasCurrentDeviceState,
             existingSettingsRoute: flag(metadata, "existing_mac_settings_route"))
     }
-    var unavailable: String { flag(device, "busy") ? "Atualizando…" : connected ? "Indisponível" : "Sem conexão" }
+    var unavailable: String { connected ? "Indisponível" : "Sem conexão" }
     var active: Bool { flag(switching, "enabled") || flag(switching, "starting") }
     var canChoose: Bool { !readFailed && boolean(switching, "enabled") == false && boolean(switching, "starting") == false && boolean(switching, "busy") == false && boolean(switching, "settling") == false && boolean(switching, "recovery_pending") == false }
     var canToggle: Bool { active || (canChoose && flag(switching, "ready")) }
@@ -313,22 +313,11 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             featureButton("touch", title: "Gestos", value: flag(model.displaySettings, "media_controls_mixed") ? "Personalizados" : boolean(model.displaySettings, "media_controls_enabled").map { $0 ? "Ativados" : "Desativados" } ?? model.unavailable, symbol: "hand.tap")
         }
         .disabled(!model.canControl).opacity(model.canControl ? 1 : 0.55)
-        if let reading = model.displayedSettings, reading.historical {
-            Text(settingsObservation(reading)).font(.system(size: 10)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
         }
     }
     private var noiseControl: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Controle de ruído").font(.system(size: 11, weight: .medium))
-                Spacer()
-                if model.requestedNoise != nil {
-                    ProgressView().controlSize(.mini)
-                    Text("Aplicando…").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
+            Text("Controle de ruído").font(.system(size: 11, weight: .medium))
             Picker("Controle de ruído", selection: Binding(
                 get: { model.requestedNoise ?? text(model.displaySettings, "noise_mode") },
                 set: { if $0 != text(model.displaySettings, "noise_mode") { model.send("device.noise", ["mode": $0]) } })) {
@@ -338,11 +327,6 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             }.pickerStyle(.segmented).labelsHidden()
                 .disabled(!model.canControl || model.requestedNoise != nil)
         }.padding(.bottom, 8)
-    }
-    private func settingsObservation(_ reading: NativeBudsPanelReadings.Settings) -> String {
-        let format = DateFormatter(); format.dateStyle = Calendar.current.isDateInToday(reading.date) ? .none : .short; format.timeStyle = .short
-        return "Última leitura dos ajustes · \(format.string(from: reading.date))"
-            + (reading.mayHaveChanged ? ". Atualize para confirmar as alterações." : "")
     }
     private func featureButton(_ key: String, title: String, value: String, symbol: String) -> some View {
         Button {
@@ -406,7 +390,7 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
                 gestureToggle("Recusar chamadas", detail: "Pinçar e segurar", key: "call_hold")
             }
             if !model.canControl || (key == "touch" && !canTouch) {
-                Text(text(model.device, "status", "Atualize os controles quando os Buds estiverem no Mac.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !model.connected { Text("Conecte os Buds ao Mac para configurar.").font(.caption).foregroundStyle(.secondary) }
                 Button("Ler controles") { model.send("device.refresh") }.disabled(!model.canRefresh)
             }
         }.padding(20).frame(width: key == "equalizer" ? 320 : key == "touch" ? 280 : 240).preferredColorScheme(.dark)
@@ -530,8 +514,8 @@ private let eqOptions = ["Normal", "Graves", "Suave", "Dinâmico", "Nítido", "A
             Text("Durante chamadas").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).padding(.top, 4)
             settingToggle("Ouvir minha voz nas chamadas", key: "sidetone")
             settingToggle("Chamadas nos Buds", key: "call_audio_to_buds")
-            if !model.canControl {
-                Text(text(model.metadata, "compatibility", text(model.device, "status", "Conecte os Buds ao Mac para configurar.")))
+            if !model.connected {
+                Text("Conecte os Buds ao Mac para configurar.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
